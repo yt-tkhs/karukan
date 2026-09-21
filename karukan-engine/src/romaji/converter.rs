@@ -64,8 +64,11 @@ impl RomajiConverter {
         }
     }
 
-    /// Force-convert leftover pending input (`ltu` → っ); characters with no
-    /// rule pass through literally (a trailing `n` stays `n`).
+    /// Force-convert leftover pending input (`ltu` → っ). A stranded `n`
+    /// settles as ん — the only kana a lone `n` can still mean once nothing
+    /// follows to make it な行 (`karukan` commits as かるかん, `kanp` as
+    /// かんp) — and any other character with no rule passes through
+    /// literally.
     pub fn flush_pending(&self, pending: &str) -> String {
         let mut buffer = pending.to_string();
         let mut result = String::new();
@@ -76,7 +79,10 @@ impl RomajiConverter {
                 result.push_str(h);
                 buffer.drain(..search.matched_len);
             } else {
-                result.push(buffer.remove(0));
+                // No rule starts here, so this `n` is not the head of
+                // な行 / `nn` / `n'`: it can only be ん.
+                let ch = buffer.remove(0);
+                result.push(if ch == 'n' { 'ん' } else { ch });
             }
         }
 
@@ -336,7 +342,7 @@ mod tests {
         assert_eq!(c.flush_pending("k"), "k");
         assert_eq!(c.flush_pending("ltu"), "っ");
         assert_eq!(c.convert_flush("k"), "k");
-        assert_eq!(c.convert_flush("kan"), "かn");
+        assert_eq!(c.convert_flush("kan"), "かん");
     }
 
     #[test]
@@ -375,6 +381,23 @@ mod tests {
         assert_eq!(c.convert_flush("a,b.").as_str(), "あ，b．");
         assert_eq!(c.convert_flush("[a]").as_str(), "［あ］");
         assert_eq!(c.convert_flush("a/b").as_str(), "あ／b");
+    }
+
+    #[test]
+    fn test_flush_settles_a_stranded_n_as_hatsuon() {
+        let c = RomajiConverter::new();
+        // A trailing `n` has nothing left to pair with: it is ん.
+        assert_eq!(c.convert_flush("karukan"), "かるかん");
+        assert_eq!(c.flush_pending("n"), "ん");
+        // Before a consonant that makes no rule with it, likewise.
+        assert_eq!(c.convert_flush("kanp"), "かんp");
+        assert_eq!(c.flush_pending("ny"), "んy");
+        // A pairing `n` is untouched: な行 and the explicit spellings.
+        assert_eq!(c.convert_flush("kani"), "かに");
+        assert_eq!(c.convert_flush("kann"), "かん");
+        assert_eq!(c.convert_flush("kan'"), "かん");
+        // Other stranded consonants still pass through.
+        assert_eq!(c.convert_flush("kak"), "かk");
     }
 
     #[test]
