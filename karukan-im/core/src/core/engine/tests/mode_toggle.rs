@@ -224,3 +224,54 @@ fn test_toggle_key_exits_alphabet_during_conversion() {
     engine.process_key(&press('a'));
     assert_eq!(engine.input_buf.reading(), "あいAか");
 }
+
+// ---- Ctrl+Shift+V reaches the application unless an aux line shows ----
+
+fn engine_with_window(
+    candidate_window: crate::config::settings::CandidateWindow,
+) -> InputMethodEngine {
+    InputMethodEngine::with_config(EngineConfig {
+        candidate_window,
+        ..EngineConfig::default()
+    })
+}
+
+#[test]
+fn ctrl_shift_v_passes_through_while_idle() {
+    // Nothing shows an aux line in the Empty state, and the chord is
+    // "paste as plain text" in terminals and browsers.
+    let mut engine = InputMethodEngine::new();
+    let result = engine.process_key(&press_ctrl_shift(Keysym::KEY_V));
+    assert!(!result.consumed);
+    assert!(!engine.config.verbose, "nothing toggled");
+}
+
+#[test]
+fn ctrl_shift_v_toggles_while_the_aux_line_shows() {
+    let mut engine = engine_with_window(crate::config::settings::CandidateWindow::Always);
+    engine.process_key(&press('a'));
+    let result = engine.process_key(&press_ctrl_shift(Keysym::KEY_V));
+    assert!(result.consumed);
+    assert!(engine.config.verbose);
+
+    engine.process_key(&press_key(Keysym::SPACE));
+    let result = engine.process_key(&press_ctrl_shift(Keysym::KEY_V));
+    assert!(result.consumed);
+    assert!(!engine.config.verbose);
+}
+
+#[test]
+fn ctrl_shift_v_passes_through_while_the_composing_window_is_held_back() {
+    // candidate_window = "conversion": no window (and no aux line) while
+    // typing, so the chord has nothing to change until Space.
+    let mut engine = engine_with_window(crate::config::settings::CandidateWindow::Conversion);
+    engine.process_key(&press('a'));
+    let result = engine.process_key(&press_ctrl_shift(Keysym::KEY_V));
+    assert!(!result.consumed);
+    assert!(!engine.config.verbose);
+
+    engine.process_key(&press_key(Keysym::SPACE));
+    let result = engine.process_key(&press_ctrl_shift(Keysym::KEY_V));
+    assert!(result.consumed);
+    assert!(engine.config.verbose);
+}

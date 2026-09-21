@@ -625,11 +625,18 @@ impl InputMethodEngine {
             return self.toggle_live_conversion();
         }
 
-        // Ctrl+Shift+V: toggle the verbose aux line (works in all states)
+        // Ctrl+Shift+V: toggle the verbose aux line — only while an aux
+        // line is on screen to show the change. Otherwise the chord goes
+        // to the application, where it is "paste as plain text" in
+        // terminals and browsers; swallowing it while idle broke that
+        // everywhere.
         if key.modifiers.control_key
             && key.modifiers.shift_key
             && (key.keysym == Keysym::KEY_V || key.keysym == Keysym::KEY_V_UPPER)
         {
+            if !self.aux_line_on_screen() {
+                return EngineResult::not_consumed();
+            }
             return self.toggle_verbose();
         }
 
@@ -666,6 +673,27 @@ impl InputMethodEngine {
         result
     }
 
+    /// Whether the current render drops the composing window (and the aux
+    /// line in it): `[display] candidate_window = "conversion"` while
+    /// composing, except in the emoji picker, which is the whole mode.
+    fn candidate_window_hidden_while_composing(&self) -> bool {
+        self.config.candidate_window == CandidateWindow::Conversion
+            && matches!(self.state, InputState::Composing { .. })
+            && self.mode.current() != InputMode::Emoji
+    }
+
+    /// Whether an aux line is on screen right now: one rides in the
+    /// candidate window, so it is there during a conversion and while
+    /// composing unless the window is held back; nothing shows it while
+    /// idle.
+    fn aux_line_on_screen(&self) -> bool {
+        match self.state {
+            InputState::Empty => false,
+            InputState::Composing { .. } => !self.candidate_window_hidden_while_composing(),
+            InputState::Conversion { .. } => true,
+        }
+    }
+
     /// `[display] candidate_window = "conversion"`: no window while
     /// typing, so the first one is what Space opens. Done on the finished
     /// result because composing renders come from many paths, the
@@ -674,10 +702,7 @@ impl InputMethodEngine {
     /// is emptied so Ctrl+digit cannot pick what is off screen. The emoji
     /// picker stays: it is the whole mode.
     fn hide_candidate_window(&mut self, mut result: EngineResult) -> EngineResult {
-        if self.config.candidate_window == CandidateWindow::Always
-            || !matches!(self.state, InputState::Composing { .. })
-            || self.mode.current() == InputMode::Emoji
-        {
+        if !self.candidate_window_hidden_while_composing() {
             return result;
         }
         self.shown_suggestions = CandidateList::default();
