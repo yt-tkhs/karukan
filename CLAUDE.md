@@ -172,13 +172,13 @@ Linux fcitx5 frontend. Wraps karukan-im via C FFI and exposes the engine to the 
 Swift/InputMethodKit frontend. All IME state lives in karukan-imserver (spawned as a bundled child process); Swift only adapts IMK events and renders UI.
 
 - `main.swift` — IMKServer startup, engine process spawn, wake-from-sleep restart, SIGPIPE handling
-- `KarukanInputController.swift` — IMKInputController; translates keys, applies engine actions (preedit/candidates/commit), JIS かな key and right-Command tap return to hiragana (exit katakana mode)
+- `KarukanInputController.swift` — IMKInputController; translates keys, applies engine actions (preedit/candidates/commit), JIS かな key and right-Command tap return to hiragana (exit katakana mode). The engine's highlighted preedit range (the segment being converted) becomes the selection within the marked text, which the app paints in its selection color like the built-in IME's 文節 (a thick underline stays as the fallback), and the candidate window is anchored under that segment (`attributes(forCharacterIndex:)`, an index relative to the marked text), re-queried when the focus moves to another segment
 - `KeyCodeMap.swift` — NSEvent → XKB keysym translation (same keysym representation as fcitx5), RightCommandTapDetector
 - `resources/*.tiff` — template menu icon (か), regenerated via `swift scripts/generate_icons.swift`; `resources/{ja,en}.lproj/InfoPlist.strings` localize the input mode name shown in the input menu
 - `EngineProcess.swift` — child process lifecycle: crash restart with exponential backoff, EOF-based clean shutdown (lets the server save its learning cache)
 - `EngineClient.swift` — JSON-RPC transport (sync for process_key, async for fire-and-forget)
 - `EngineProtocol.swift` — Swift mirror of `karukan-im/core/src/server/protocol.rs` (keep in sync; protocol_version guards breaking changes)
-- `CandidateWindowController.swift` — custom NSPanel candidate window (engine pre-paginates)
+- `CandidateWindowController.swift` — custom NSPanel candidate window (engine pre-paginates) on Liquid Glass (`NSGlassEffectView` on macOS 26+, `NSVisualEffectView` popover material below): number column, accent-colored rounded selection, right-aligned annotations, aux footer under a hairline. The page indicator is the aux line's `(1/3)`, so the panel renders none of its own
 
 ## macOS Input Mode Design
 

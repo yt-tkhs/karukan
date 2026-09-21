@@ -2,16 +2,29 @@ import Cocoa
 
 /// Custom candidate window (borderless non-activating NSPanel).
 ///
-/// The engine pre-paginates: `show` receives only the visible page plus
-/// page metadata, so this controller just renders rows. An optional aux
-/// line (reading hint / model info from the engine) is shown as a footer.
+/// The engine pre-paginates: `show` receives only the visible page, so
+/// this controller just renders rows. An optional aux line (reading hint /
+/// model info from the engine, which also carries the page indicator) is
+/// shown as a footer.
+///
+/// The rows sit on Liquid Glass (`NSGlassEffectView`, macOS 26+) so the
+/// panel reads like the system's own menus and the built-in Japanese IME's
+/// candidate window; older systems get the popover material with the same
+/// rounded shape. The selected row is an accent-colored rounded highlight,
+/// numbers sit in a narrow left column and annotations hug the right edge,
+/// matching the built-in IME's layout.
 class CandidateWindowController {
     // Visual scale of the panel. Candidate rows use a larger type size
-    // than the footers (page indicator / aux line), matching the system
-    // Japanese IME's proportions.
-    private static let candidateFontSize: CGFloat = 18
-    private static let footerFontSize: CGFloat = 13
+    // than the number column, annotations and the footer, matching the
+    // system Japanese IME's proportions.
+    static let candidateFontSize: CGFloat = 18
+    static let detailFontSize: CGFloat = 13
+    static let footerFontSize: CGFloat = 12
     private static let minPanelWidth: CGFloat = 160
+    private static let cornerRadius: CGFloat = 12
+    /// Gap between the composition's line rect and the panel edge, so the
+    /// glass rim doesn't touch the text line.
+    private static let cursorGap: CGFloat = 4
 
     private let panel: NSPanel
     private let stackView: NSStackView
@@ -21,8 +34,6 @@ class CandidateWindowController {
     private struct PageState {
         let candidates: [CandidateItem]
         let cursor: Int
-        let page: Int
-        let totalPages: Int
     }
     private var pageState: PageState?
 
@@ -35,26 +46,69 @@ class CandidateWindowController {
         )
         panel.level = .popUpMenu
         panel.hidesOnDeactivate = false
+        // A transparent window: the glass paints the panel's shape, and
+        // the window shadow follows that rounded shape.
         panel.isOpaque = false
-        panel.backgroundColor = NSColor.windowBackgroundColor
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
         panel.ignoresMouseEvents = true
 
         stackView = NSStackView()
         stackView.orientation = .vertical
         stackView.alignment = .leading
-        stackView.spacing = 4
-        stackView.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        stackView.spacing = 2
+        stackView.edgeInsets = NSEdgeInsets(top: 6, left: 6, bottom: 6, right: 6)
         stackView.translatesAutoresizingMaskIntoConstraints = false
 
-        panel.contentView?.addSubview(stackView)
-        if let contentView = panel.contentView {
-            NSLayoutConstraint.activate([
-                stackView.topAnchor.constraint(equalTo: contentView.topAnchor),
-                stackView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-                stackView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-                stackView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            ])
+        let content = NSView()
+        content.addSubview(stackView)
+        NSLayoutConstraint.activate([
+            stackView.topAnchor.constraint(equalTo: content.topAnchor),
+            stackView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            stackView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            stackView.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+        ])
+
+        let backdrop = Self.makeBackdrop(content: content)
+        panel.contentView = backdrop
+        content.frame = backdrop.bounds
+    }
+
+    /// The glass the rows sit on. `NSGlassEffectView` manages its
+    /// `contentView`'s frame itself, so the content follows the backdrop
+    /// by autoresizing mask rather than by constraints that could fight it.
+    private static func makeBackdrop(content: NSView) -> NSView {
+        content.autoresizingMask = [.width, .height]
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            glass.cornerRadius = cornerRadius
+            // `.clear` is the style behind the built-in IME's unreadable
+            // white-on-white rows in dark mode over light documents;
+            // `.regular` keeps the appearance's own tone under the text.
+            glass.style = .regular
+            glass.contentView = content
+            return glass
         }
+        let effect = NSVisualEffectView()
+        effect.material = .popover
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.maskImage = roundedRectMask(radius: cornerRadius)
+        effect.addSubview(content)
+        return effect
+    }
+
+    /// A stretchable rounded-rect mask: the corners come from a small
+    /// image whose middle is stretched, so any panel size stays rounded.
+    private static func roundedRectMask(radius: CGFloat) -> NSImage {
+        let side = radius * 2 + 1
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        image.resizingMode = .stretch
+        return image
     }
 
     var isVisible: Bool { panel.isVisible }
@@ -63,11 +117,8 @@ class CandidateWindowController {
     /// caller can skip its (synchronous, per-keystroke) client IPC while
     /// the panel is already on screen, since the composition anchor
     /// doesn't move mid-composition.
-    func show(
-        candidates: [CandidateItem], cursor: Int, page: Int, totalPages: Int, cursorRect: NSRect?
-    ) {
-        pageState = PageState(
-            candidates: candidates, cursor: cursor, page: page, totalPages: totalPages)
+    func show(candidates: [CandidateItem], cursor: Int, cursorRect: NSRect?) {
+        pageState = PageState(candidates: candidates, cursor: cursor)
         render(cursorRect: cursorRect)
     }
 
@@ -102,13 +153,10 @@ class CandidateWindowController {
         }
 
         for (index, candidate) in state.candidates.enumerated() {
-            addCandidateRow(candidate, number: index + 1, selected: index == state.cursor)
-        }
-        if state.totalPages > 1 {
-            addFooterLabel("[\(state.page + 1)/\(state.totalPages)]")
+            addRow(CandidateRowView(candidate: candidate, number: index + 1, selected: index == state.cursor))
         }
         if let aux = auxText, !aux.isEmpty {
-            addFooterLabel(aux)
+            addFooter(aux, separated: !state.candidates.isEmpty)
         }
 
         positionPanel(cursorRect: cursorRect)
@@ -122,47 +170,35 @@ class CandidateWindowController {
         rowViews.removeAll()
     }
 
-    private func addCandidateRow(_ candidate: CandidateItem, number: Int, selected: Bool) {
-        let text = NSMutableAttributedString(
-            string: "\(number). \(candidate.text)",
-            attributes: [
-                .font: NSFont.systemFont(ofSize: Self.candidateFontSize),
-                .foregroundColor: selected ? NSColor.white : NSColor.labelColor,
-            ]
-        )
-        if let description = candidate.description {
-            text.append(
-                NSAttributedString(
-                    string: "  \(description)",
-                    attributes: [
-                        .font: NSFont.systemFont(ofSize: Self.footerFontSize),
-                        .foregroundColor: selected
-                            ? NSColor.white.withAlphaComponent(0.8)
-                            : NSColor.secondaryLabelColor,
-                    ]
-                ))
-        }
-
-        let label = NSTextField(labelWithAttributedString: text)
-        label.translatesAutoresizingMaskIntoConstraints = false
-        if selected {
-            label.backgroundColor = NSColor.selectedContentBackgroundColor
-            label.drawsBackground = true
-        } else {
-            label.backgroundColor = .clear
-            label.drawsBackground = false
-        }
-        stackView.addArrangedSubview(label)
-        rowViews.append(label)
+    /// Rows stretch to the panel width so the selection highlight spans
+    /// the whole row, not just its text. Pinned explicitly: the stack's
+    /// `.width` alignment leaves rows hugging their content.
+    private func addRow(_ view: NSView) {
+        stackView.addArrangedSubview(view)
+        let insets = stackView.edgeInsets
+        view.widthAnchor.constraint(
+            equalTo: stackView.widthAnchor, constant: -(insets.left + insets.right)
+        ).isActive = true
+        rowViews.append(view)
     }
 
-    private func addFooterLabel(_ text: String) {
+    /// The aux line, set off from the candidates by a hairline like a menu
+    /// section. With no candidates above it the line would only underline
+    /// the panel's top edge, so it is left out.
+    private func addFooter(_ text: String, separated: Bool) {
+        if separated {
+            let separator = FilledView(color: .separatorColor)
+            separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
+            addRow(separator)
+            stackView.setCustomSpacing(4, after: separator)
+        }
         let label = NSTextField(labelWithString: text)
-        label.font = NSFont.systemFont(ofSize: Self.footerFontSize)
-        label.textColor = NSColor.secondaryLabelColor
-        label.translatesAutoresizingMaskIntoConstraints = false
-        stackView.addArrangedSubview(label)
-        rowViews.append(label)
+        label.font = .systemFont(ofSize: Self.footerFontSize)
+        label.textColor = .secondaryLabelColor
+        let footer = NSStackView(views: [label])
+        footer.orientation = .horizontal
+        footer.edgeInsets = NSEdgeInsets(top: 2, left: 10, bottom: 2, right: 10)
+        addRow(footer)
     }
 
     private var lastCursorRect: NSRect = .zero
@@ -173,10 +209,12 @@ class CandidateWindowController {
         }
         let cursorRect = lastCursorRect
 
+        // The stack's edge insets are the panel's padding, so its fitting
+        // size is the panel size.
         stackView.layoutSubtreeIfNeeded()
         let contentSize = stackView.fittingSize
-        let panelWidth = max(contentSize.width + 16, Self.minPanelWidth)
-        let panelHeight = contentSize.height + 8
+        let panelWidth = max(contentSize.width, Self.minPanelWidth)
+        let panelHeight = contentSize.height
 
         guard cursorRect != .zero else {
             panel.setFrame(
@@ -186,24 +224,107 @@ class CandidateWindowController {
         }
 
         // Flip above the cursor when the panel would fall off the bottom of
-        // the screen.
-        let showAbove: Bool
-        if let screen = NSScreen.main {
-            showAbove = cursorRect.origin.y - panelHeight < screen.visibleFrame.origin.y
-        } else {
-            showAbove = false
-        }
-
-        let originY: CGFloat
-        if showAbove {
-            originY = cursorRect.origin.y + cursorRect.size.height
-        } else {
-            originY = cursorRect.origin.y - panelHeight
-        }
+        // the screen — the screen the composition is on, not `NSScreen.main`:
+        // with two displays the main one can be the other, whose bottom edge
+        // would flip the panel for no reason.
+        let belowY = cursorRect.minY - Self.cursorGap - panelHeight
+        let screen =
+            NSScreen.screens.first { $0.frame.contains(cursorRect.origin) } ?? NSScreen.main
+        let showAbove = screen.map { belowY < $0.visibleFrame.minY } ?? false
+        let originY = showAbove ? cursorRect.maxY + Self.cursorGap : belowY
 
         panel.setFrame(
-            NSRect(x: cursorRect.origin.x, y: originY, width: panelWidth, height: panelHeight),
+            NSRect(x: cursorRect.minX, y: originY, width: panelWidth, height: panelHeight),
             display: true)
         panel.orderFront(nil)
+    }
+}
+
+/// One candidate row: number column, surface, and the annotation hugging
+/// the right edge. The selected row is painted as an accent-colored
+/// rounded highlight; painting it in `updateLayer` keeps the color right
+/// across appearance and accent-color changes.
+private final class CandidateRowView: NSView {
+    private static let cornerRadius: CGFloat = 6
+    private static let numberColumnWidth: CGFloat = 14
+
+    private let selected: Bool
+
+    init(candidate: CandidateItem, number: Int, selected: Bool) {
+        self.selected = selected
+        super.init(frame: .zero)
+        wantsLayer = true
+
+        let primary: NSColor = selected ? .selectedMenuItemTextColor : .labelColor
+        let secondary: NSColor =
+            selected ? NSColor.selectedMenuItemTextColor.withAlphaComponent(0.8) : .secondaryLabelColor
+
+        let numberLabel = NSTextField(labelWithString: "\(number)")
+        numberLabel.font = .monospacedDigitSystemFont(
+            ofSize: CandidateWindowController.detailFontSize, weight: .regular)
+        numberLabel.alignment = .right
+        numberLabel.textColor = secondary
+        numberLabel.widthAnchor.constraint(equalToConstant: Self.numberColumnWidth).isActive = true
+
+        let surfaceLabel = NSTextField(labelWithString: candidate.text)
+        surfaceLabel.font = .systemFont(ofSize: CandidateWindowController.candidateFontSize)
+        surfaceLabel.textColor = primary
+
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .firstBaseline
+        row.spacing = 8
+        row.edgeInsets = NSEdgeInsets(top: 4, left: 10, bottom: 4, right: 10)
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.addView(numberLabel, in: .leading)
+        row.addView(surfaceLabel, in: .leading)
+        if let description = candidate.description {
+            let annotationLabel = NSTextField(labelWithString: description)
+            annotationLabel.font = .systemFont(ofSize: CandidateWindowController.detailFontSize)
+            annotationLabel.textColor = secondary
+            row.addView(annotationLabel, in: .trailing)
+        }
+
+        addSubview(row)
+        NSLayoutConstraint.activate([
+            row.topAnchor.constraint(equalTo: topAnchor),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        guard let layer else { return }
+        layer.cornerRadius = Self.cornerRadius
+        layer.backgroundColor = selected ? NSColor.controlAccentColor.cgColor : nil
+    }
+}
+
+/// A view filled with one dynamic color, resolved in `updateLayer` so it
+/// follows appearance changes.
+private final class FilledView: NSView {
+    private let color: NSColor
+
+    init(color: NSColor) {
+        self.color = color
+        super.init(frame: .zero)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        layer?.backgroundColor = color.cgColor
     }
 }

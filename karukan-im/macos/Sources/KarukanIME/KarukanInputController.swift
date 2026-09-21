@@ -15,6 +15,15 @@ class KarukanInputController: IMKInputController {
     /// engine actions). Used to decide when to refresh surrounding text.
     private var hasPreedit = false
 
+    /// UTF-16 offset, within the marked text, of the segment being
+    /// converted (the engine's highlighted range); 0 while nothing is
+    /// highlighted. The candidate window hangs under it.
+    private var focusedStart = 0
+
+    /// Where the candidate window was last anchored, so it follows the
+    /// focus between segments but is not re-queried on every keystroke.
+    private var anchoredAt: Int?
+
     /// Detects the lone right-⌘ tap that returns to hiragana mode on
     /// keyboards without a JIS かな key (issue #33).
     private var rightCommandTap = RightCommandTapDetector()
@@ -175,26 +184,28 @@ class KarukanInputController: IMKInputController {
                 hasPreedit = !text.isEmpty
                 setMarkedText(text: text, caret: caret, attributes: attributes, client: client)
 
-            case .showCandidates(let candidates, let cursor, let page, let totalPages):
-                // Query the composition anchor (a synchronous IPC into the
-                // focused app) only when the panel comes on screen; it
-                // doesn't move while the panel stays visible.
+            // The page indicator rides in the aux line the engine emits
+            // alongside the candidates, so the panel doesn't render one.
+            case .showCandidates(let candidates, let cursor, _, _):
+                // Query the anchor (a synchronous IPC into the focused app)
+                // only when the panel comes on screen or the focus moves to
+                // another segment: the panel hangs under the segment being
+                // converted, like the built-in IME's, and that segment does
+                // not move while the panel stays on it. The index is
+                // relative to the marked text.
                 var cursorRect: NSRect?
-                if !Self.candidateWindow.isVisible {
+                if !Self.candidateWindow.isVisible || anchoredAt != focusedStart {
                     var lineHeightRect = NSRect.zero
-                    client.attributes(forCharacterIndex: 0, lineHeightRectangle: &lineHeightRect)
+                    client.attributes(
+                        forCharacterIndex: focusedStart, lineHeightRectangle: &lineHeightRect)
                     cursorRect = lineHeightRect
+                    anchoredAt = focusedStart
                 }
-                Self.candidateWindow.show(
-                    candidates: candidates,
-                    cursor: cursor,
-                    page: page,
-                    totalPages: totalPages,
-                    cursorRect: cursorRect
-                )
+                Self.candidateWindow.show(candidates: candidates, cursor: cursor, cursorRect: cursorRect)
 
             case .hideCandidates:
                 Self.candidateWindow.hide()
+                anchoredAt = nil
 
             case .updateAux, .hideAux:
                 break  // applied above
@@ -249,6 +260,7 @@ class KarukanInputController: IMKInputController {
     private func setMarkedText(
         text: String, caret: Int, attributes: [PreeditAttr], client: any IMKTextInput
     ) {
+        focusedStart = 0
         guard !text.isEmpty else {
             client.setMarkedText(
                 NSAttributedString(string: ""),
@@ -262,14 +274,22 @@ class KarukanInputController: IMKInputController {
             string: text,
             attributes: [.underlineStyle: NSUnderlineStyle.single.rawValue]
         )
+        // The segment being converted is shown the way the built-in IME
+        // shows its 文節: as the selection within the marked text, which
+        // the app paints in its selection color. A thick underline alone
+        // is too faint to tell from the single one, so it stays only as the
+        // fallback for apps that ignore the selection (the convention
+        // azooKey/mac-akaza use for marked text).
+        var selection = NSRange(location: utf16Offset(ofScalarOffset: caret, in: text), length: 0)
         for attr in attributes {
             guard let range = utf16Range(of: attr.start..<attr.end, in: text) else { continue }
             let style: NSUnderlineStyle
             switch attr.style {
-            // The focused/highlighted segment is drawn with a thick
-            // underline (the convention azooKey/mac-akaza use for marked
-            // text, since background colors are unreliable across apps).
-            case "underline_double", "highlight", "reverse":
+            case "highlight", "reverse":
+                style = .thick
+                selection = range
+                focusedStart = range.location
+            case "underline_double":
                 style = .thick
             default:
                 style = .single
@@ -277,10 +297,9 @@ class KarukanInputController: IMKInputController {
             attributed.addAttribute(.underlineStyle, value: style.rawValue, range: range)
         }
 
-        let caretUTF16 = utf16Offset(ofScalarOffset: caret, in: text)
         client.setMarkedText(
             attributed,
-            selectionRange: NSRange(location: caretUTF16, length: 0),
+            selectionRange: selection,
             replacementRange: NSRange(location: NSNotFound, length: 0)
         )
     }
