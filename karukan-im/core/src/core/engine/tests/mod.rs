@@ -22,6 +22,7 @@ mod passthrough;
 mod pending_romaji;
 mod predictive;
 mod rewriter;
+mod segments;
 mod source_filter;
 mod strategy;
 mod surrounding;

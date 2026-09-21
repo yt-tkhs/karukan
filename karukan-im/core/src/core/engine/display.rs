@@ -192,6 +192,11 @@ impl InputMethodEngine {
     /// taken from the chunk.
     fn conversion_reading(&self, shown: &str) -> String {
         if self.state.reading() == Some(shown) {
+            // A segment carved out with Shift+←/→ is not a chunk of the
+            // buffer: count it on its own.
+            if self.state.is_segmented() {
+                return format!("{shown} {}", self.fill(shown, self.chunk_chars()));
+            }
             return self.aux_reading();
         }
         let fill = self.fill(&self.caret_chunk_reading(), self.chunk_chars());

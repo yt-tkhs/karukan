@@ -74,11 +74,10 @@ impl InputMethodEngine {
         // rather than on the next keystroke. Nothing is being typed in the
         // Empty state, so there the toggle reports itself instead.
         let aux = match &self.state {
-            InputState::Conversion {
-                reading,
-                candidates,
-                ..
-            } => self.format_aux_conversion(reading, candidates),
+            InputState::Conversion { .. } => {
+                let segment = self.state.focused_segment().expect("state is Conversion");
+                self.format_aux_conversion(&segment.reading, &segment.candidates)
+            }
             InputState::Composing { .. } => self.format_aux_suggest(),
             InputState::Empty => format!("詳細表示: {mode}"),
         };

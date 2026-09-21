@@ -352,3 +352,27 @@ fn colon_in_hiragana_does_not_enter_emoji_when_already_composing() {
     // not have triggered emoji mode.
     assert!(engine.preedit().unwrap().text().contains('あ'));
 }
+
+#[test]
+fn typing_in_the_emoji_picker_refines_the_query() {
+    // The picker is a search: after Space, typing extends the query and
+    // drops back to the composition, whose suggestion list is the picker
+    // again — never committing the selected emoji (the plain kana
+    // conversion commits and moves on).
+    let mut engine = InputMethodEngine::new();
+    engine.process_key(&press_colon());
+    for ch in ['s', 'm', 'i'] {
+        engine.process_key(&press(ch));
+    }
+    engine.process_key(&press_key(Keysym::SPACE));
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+
+    let result = engine.process_key(&press('l'));
+    assert!(
+        commit_text(&result).is_none(),
+        "typing must not commit the emoji"
+    );
+    assert!(matches!(engine.state(), InputState::Composing { .. }));
+    assert_eq!(engine.mode.current(), InputMode::Emoji);
+    assert_eq!(engine.input_buf.reading(), ":smil");
+}

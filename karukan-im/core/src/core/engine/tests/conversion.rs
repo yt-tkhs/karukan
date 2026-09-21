@@ -1,40 +1,71 @@
 use super::*;
 
 #[test]
-fn test_conversion_char_refines_reading() {
+fn test_conversion_char_commits_selection_and_continues() {
+    // 「さぶすてーたす」 Space → 「サブステータス」 picked, then 「の」 typed:
+    // the pick is committed as it stands and 「の」 starts the next
+    // composition, as in mozc. Rebuilding the conversion over
+    // 「さぶすてーたすの」 threw the pick away.
     let mut engine = InputMethodEngine::new();
+    engine.dicts.user = Some(dict_from_json(
+        r#"[{"reading":"あい","candidates":[{"surface":"藍","score":1.0}]}]"#,
+    ));
+    engine.set_surrounding_context("前の文。", "");
 
-    // Type "あい" and enter conversion
     engine.process_key(&press('a'));
     engine.process_key(&press('i'));
     engine.process_key(&press_key(Keysym::SPACE));
     assert!(matches!(engine.state(), InputState::Conversion { .. }));
+    assert_eq!(engine.candidates().unwrap().selected_text(), Some("藍"));
 
-    // Typing during conversion must NOT commit — it drops back to the
-    // composition and extends the reading (incremental-search feel).
     let result = engine.process_key(&press('k'));
     assert!(result.consumed);
-    assert!(
-        !result
-            .actions
-            .iter()
-            .any(|a| matches!(a, EngineAction::Commit(_))),
-        "typing must refine, not commit"
-    );
+    assert_eq!(committed(&result), Some("藍".to_string()));
+    // The commit lands before the new preedit, so the frontend inserts the
+    // text and then opens the composition after it.
+    let commit_at = result
+        .actions
+        .iter()
+        .position(|a| matches!(a, EngineAction::Commit(_)))
+        .unwrap();
+    let preedit_at = result
+        .actions
+        .iter()
+        .position(|a| matches!(a, EngineAction::UpdatePreedit(_)))
+        .expect("the next composition's preedit");
+    assert!(commit_at < preedit_at);
     assert!(matches!(engine.state(), InputState::Composing { .. }));
 
     engine.process_key(&press('a'));
-    assert_eq!(engine.input_buf.reading(), "あいか");
+    assert_eq!(
+        engine.input_buf.reading(),
+        "か",
+        "the new composition holds only what was typed after the commit"
+    );
 
-    // The refined reading converts and commits as one unit.
+    // The committed text is now left of the caret, and the model converting
+    // 「か」 sees it: the frontend cannot refresh the context mid-keystroke.
+    assert_eq!(
+        engine.surrounding_context.as_ref().unwrap().left.as_deref(),
+        Some("前の文。藍"),
+    );
+}
+
+#[test]
+fn test_conversion_char_pushes_context_even_without_editor_context() {
+    // An app that never reports surrounding text still gets the committed
+    // text as context — it is certainly what the caret follows now.
+    let mut engine = InputMethodEngine::new();
+    assert!(engine.surrounding_context.is_none());
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
     engine.process_key(&press_key(Keysym::SPACE));
-    assert!(matches!(engine.state(), InputState::Conversion { .. }));
-    let result = engine.process_key(&press_key(Keysym::RETURN));
-    assert!(
-        result
-            .actions
-            .iter()
-            .any(|a| matches!(a, EngineAction::Commit(_)))
+    let result = engine.process_key(&press('k'));
+    let text = committed(&result).expect("the selection is committed");
+    assert_eq!(
+        engine.surrounding_context.as_ref().unwrap().left.as_deref(),
+        Some(text.as_str()),
     );
 }
 
@@ -97,22 +128,37 @@ fn committed(result: &EngineResult) -> Option<String> {
 }
 
 #[test]
-fn test_bare_digit_during_conversion_refines_instead_of_selecting() {
-    // Digits are plain text input everywhere: during conversion they extend
-    // the reading like any printable char, never select a candidate.
+fn test_bare_digit_during_conversion_is_text_not_selection() {
+    // Digits are plain text input everywhere: during conversion a bare
+    // digit accepts the *selected* candidate and starts the next
+    // composition with the digit, like any printable char — it never
+    // selects candidate N (that is Ctrl+digit).
     let mut engine = InputMethodEngine::new();
     engine.dicts.user = Some(dict_from_json(
-        r#"[{"reading":"あい","candidates":[{"surface":"藍","score":1.0}]}]"#,
+        r#"[{"reading":"あい","candidates":[
+            {"surface":"藍","score":2.0},
+            {"surface":"愛","score":1.0}
+        ]}]"#,
     ));
 
     engine.process_key(&press('a'));
     engine.process_key(&press('i'));
     engine.process_key(&press_key(Keysym::SPACE));
     assert!(matches!(engine.state(), InputState::Conversion { .. }));
+    let selected = engine
+        .candidates()
+        .unwrap()
+        .selected_text()
+        .unwrap()
+        .to_string();
 
     let result = engine.process_key(&press('2'));
-    assert!(committed(&result).is_none(), "a digit must not commit");
-    assert_eq!(engine.input_buf.reading(), "あい2");
+    assert_eq!(
+        committed(&result),
+        Some(selected),
+        "the selection, not candidate 2"
+    );
+    assert_eq!(engine.input_buf.reading(), "2");
 }
 
 #[test]

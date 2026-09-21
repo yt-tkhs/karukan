@@ -266,11 +266,20 @@ impl InputMethodEngine {
     /// the cost stays bounded however long the reading grows. An empty
     /// result means "the model produced nothing"; a candidate equal to the
     /// reading is a real answer (kana-only words convert to themselves).
-    pub(super) fn model_candidates(&mut self, reading: &str, num_candidates: usize) -> Vec<String> {
+    ///
+    /// `preceding` is the converted text of the segments before this
+    /// reading, which the model sees as its left context after the
+    /// editor's; empty for a whole-reading conversion.
+    pub(super) fn model_candidates(
+        &mut self,
+        reading: &str,
+        preceding: &str,
+        num_candidates: usize,
+    ) -> Vec<String> {
         if !karukan_engine::contains_kana(reading) {
             return Vec::new();
         }
-        let base_ctx = self.truncate_context_for_api();
+        let base_ctx = self.lctx_for(&self.truncate_context_for_api(), preceding);
         let chars: Vec<char> = reading.chars().collect();
         let span_start = self.beam_span_start(&chars);
         let prefix = self.convert_on_chunk_grid(&chars[..span_start], &base_ctx);

@@ -35,8 +35,8 @@ use tracing::{debug, trace};
 
 use super::candidate::{Candidate, CandidateList, CandidateSource};
 use super::keycode::{KeyEvent, Keysym};
-use super::preedit::Preedit;
-use super::state::InputState;
+use super::preedit::{AttributeType, Preedit, PreeditSegment};
+use super::state::{InputState, Segment};
 use crate::config::settings::{CandidateWindow, Settings, SpaceStyle};
 
 /// A conversion candidate tagged with its source and an optional description.
@@ -292,7 +292,9 @@ impl InputMethodEngine {
     /// to know which state produced it.
     fn shown_candidates_mut(&mut self) -> Option<&mut CandidateList> {
         match &mut self.state {
-            InputState::Conversion { candidates, .. } => Some(candidates),
+            InputState::Conversion {
+                segments, focus, ..
+            } => segments.get_mut(*focus).map(|s| &mut s.candidates),
             InputState::Composing { .. } => Some(&mut self.shown_suggestions),
             InputState::Empty => None,
         }
@@ -309,7 +311,22 @@ impl InputMethodEngine {
         if candidates.select_on_page(digit).is_none() {
             return EngineResult::consumed();
         }
-        let Some(selected) = candidates.selected() else {
+        if matches!(self.state, InputState::Conversion { .. }) {
+            // In a split conversion the pick moves on to the next segment,
+            // mozc-style; on the last segment it commits the whole, as it
+            // always did.
+            let last = self
+                .state
+                .segments()
+                .zip(self.state.focus())
+                .is_some_and(|(segments, focus)| focus + 1 == segments.len());
+            return if last {
+                self.commit_conversion()
+            } else {
+                self.move_focus(|focus, _| focus + 1)
+            };
+        }
+        let Some(selected) = self.shown_suggestions.selected() else {
             return EngineResult::consumed();
         };
         let text = selected.text.clone();
@@ -322,12 +339,13 @@ impl InputMethodEngine {
         // A suggestion always carries its reading; fall back to the buffer
         // so a candidate built without one still records under a key. A
         // non-learnable source (a date is stale tomorrow) records nothing.
-        let reading = if source.is_none_or(|s| s.is_learnable()) {
-            reading.or_else(|| Some(self.input_buf.reading()))
+        let learned = if source.is_none_or(|s| s.is_learnable()) {
+            let reading = reading.unwrap_or_else(|| self.input_buf.reading());
+            vec![(reading, text.clone())]
         } else {
-            None
+            Vec::new()
         };
-        self.finish_conversion(&text, &reading);
+        self.finish_conversion(learned);
 
         EngineResult::consumed()
             .with_action(EngineAction::Commit(text))
@@ -427,6 +445,18 @@ impl InputMethodEngine {
         self.surrounding_context = Some(SurroundingContext { left, right });
     }
 
+    /// Extend the left context by `text` just committed at the caret, so a
+    /// composition started in the same keystroke converts against it.
+    pub(super) fn push_left_context(&mut self, text: &str) {
+        let ctx = self.surrounding_context.get_or_insert(SurroundingContext {
+            left: None,
+            right: None,
+        });
+        let mut left = ctx.left.take().unwrap_or_default();
+        left.push_str(text);
+        ctx.left = Some(keep_last_chars(&left, self.config.context_chars));
+    }
+
     /// Handle mode toggle keys (Right Alt/Super/Meta/Hyper and the JIS 変換
     /// key): one-way non-Hiragana → Hiragana.
     /// Returns `Some(result)` if the key was handled, `None` if not a mode toggle key.
@@ -470,11 +500,10 @@ impl InputMethodEngine {
             // included: a composing line here would hide the source-filter
             // header mid-view.
             let aux = match &self.state {
-                InputState::Conversion {
-                    reading,
-                    candidates,
-                    ..
-                } => self.format_aux_conversion(reading, candidates),
+                InputState::Conversion { .. } => {
+                    let segment = self.state.focused_segment().expect("state is Conversion");
+                    self.format_aux_conversion(&segment.reading, &segment.candidates)
+                }
                 _ => self.format_aux_composing(),
             };
             if matches!(self.state, InputState::Composing { .. }) {
@@ -675,10 +704,8 @@ impl InputMethodEngine {
                 text
             }
             InputState::Conversion { .. } => {
-                let (text, reading) = self
-                    .selected_conversion_info()
-                    .expect("state is Conversion");
-                self.finish_conversion(&text, &reading);
+                let (text, learned) = self.conversion_commit().expect("state is Conversion");
+                self.finish_conversion(learned);
                 text
             }
         };

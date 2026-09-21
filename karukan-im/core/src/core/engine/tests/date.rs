@@ -114,9 +114,8 @@ fn committing_a_date_candidate_records_no_learning() {
     let surface = date.text.clone();
     engine.state = InputState::Conversion {
         preedit: Preedit::new(),
-        candidates: CandidateList::new(vec![date]),
-        reading: "きょう".to_string(),
-        filter: None,
+        segments: vec![Segment::new("きょう", CandidateList::new(vec![date]))],
+        focus: 0,
     };
 
     let result = engine.process_key(&press_key(Keysym::RETURN));

@@ -4,6 +4,7 @@
 //! the mixed list, which dedups shared texts into the highest-priority
 //! source and would hide them from every lower one.
 
+use super::conversion::Prediction;
 use super::conversion::width_annotation;
 use super::*;
 
@@ -101,7 +102,10 @@ impl InputMethodEngine {
         // Left shown, the stale live chunks would survive the commit and
         // render as the next composition's preedit.
         self.live.shown = false;
-        self.enter_conversion_state(&reading, CandidateList::new(Vec::new()));
+        self.enter_conversion_state(
+            vec![Segment::new(reading, CandidateList::new(Vec::new()))],
+            0,
+        );
         true
     }
 
@@ -113,8 +117,6 @@ impl InputMethodEngine {
         };
         let view = self.source_view(next, &reading);
         let list = self.settle_candidates(view);
-        let selected = list.selected_text().unwrap_or(&reading).to_string();
-        let preedit = Preedit::with_text_highlighted(&selected);
         // The aux leads with what the user typed, tail included — typing
         // refines the view in place, and the selected candidate's own
         // reading would otherwise be the only thing on the line, leaving no
@@ -127,24 +129,9 @@ impl InputMethodEngine {
             Some(full) if full != typed => format!("{typed} → {full}"),
             _ => typed,
         };
-        if let InputState::Conversion {
-            filter,
-            candidates,
-            preedit: state_preedit,
-            ..
-        } = &mut self.state
-        {
-            *filter = Some(next);
-            *candidates = list.clone();
-            *state_preedit = preedit.clone();
-        }
+        self.set_focused_list(list, Some(next));
         debug!("candidate filter → {:?}", next);
-        // After the state assignment: the aux header reads the active filter.
-        let aux = self.format_aux_conversion_with_page(&aux_reading, Some(&list));
-        EngineResult::consumed()
-            .with_action(EngineAction::UpdatePreedit(preedit))
-            .with_action(EngineAction::ShowCandidates(list))
-            .with_action(EngineAction::UpdateAuxText(aux))
+        self.render_conversion(&aux_reading)
     }
 
     /// Candidates for the view narrowed to `source`. Each view queries its
@@ -156,7 +143,12 @@ impl InputMethodEngine {
         // model and rewriter cannot consume a tail and use the settled
         // `reading` — the exact text Enter commits.
         let (base, pending) = self.live_query_split(reading);
+        // A segment closed by a user-drawn boundary takes exact matches
+        // only: an entry whose reading ran past the boundary would double
+        // up with the next segment on commit.
+        let closed = self.focused_prediction() == Prediction::ExactOnly;
         match source {
+            CandidateSource::Learning if closed => self.lookup_learning_exact(reading),
             CandidateSource::Learning => self.lookup_learning_history(&base, &pending),
             // One dictionary view over both dictionaries: usually the user
             // just wants to look the reading up, not to pick which book it
@@ -168,11 +160,21 @@ impl InputMethodEngine {
             // A paged dictionary browser wants everything: uncapped, and
             // predictive from the first char (no flood guard).
             CandidateSource::UserDictionary | CandidateSource::Dictionary => self
-                .search_dictionaries(&base, &pending, usize::MAX, usize::MAX, 1, None)
+                .search_dictionaries(
+                    &base,
+                    &pending,
+                    usize::MAX,
+                    if closed { 0 } else { usize::MAX },
+                    1,
+                    None,
+                )
                 .into_iter()
                 .map(|ac| ac.into_candidate(&base))
                 .collect(),
-            CandidateSource::Model => self.model_source_view(reading),
+            CandidateSource::Model => {
+                let preceding = self.preceding_text();
+                self.model_source_view(reading, &preceding)
+            }
             // Rewriter variants regenerate from the reading; the plain kana
             // pair rides at the tail (lowest priority).
             CandidateSource::Rewriter => {
@@ -209,8 +211,8 @@ impl InputMethodEngine {
     /// Model candidates for the narrowed AI view — the same split
     /// conversion as the mixed list, so right after Space this is normally
     /// a pure cache replay of the list's model rows.
-    fn model_source_view(&mut self, reading: &str) -> Vec<Candidate> {
-        self.model_candidates(reading, self.config.num_candidates)
+    fn model_source_view(&mut self, reading: &str, preceding: &str) -> Vec<Candidate> {
+        self.model_candidates(reading, preceding, self.config.num_candidates)
             .into_iter()
             .map(|text| Candidate {
                 text,
@@ -224,9 +226,10 @@ impl InputMethodEngine {
     /// Base reading + unresolved romaji tail for live-narrowing queries.
     /// The split only predicts correctly while the caret sits at the end of
     /// the composition (あk|い settles to あkい, never あいか…); otherwise
-    /// fall back to the settled `reading` with no tail.
+    /// fall back to the settled `reading` with no tail. A segment of a
+    /// split reading is not the buffer either: it keeps its own reading.
     fn live_query_split(&self, reading: &str) -> (String, String) {
-        if self.input_buf.cursor() == self.input_buf.char_count() {
+        if !self.state.is_segmented() && self.input_buf.cursor() == self.input_buf.char_count() {
             (self.input_buf.reading(), self.input_buf.pending())
         } else {
             (reading.to_string(), String::new())

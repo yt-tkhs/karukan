@@ -273,6 +273,17 @@ impl InputMethodEngine {
             // different conversion path — PredictAndConvert — in the same spirit).
             Keysym::TAB => self.start_conversion(LearningLookup::Skip),
             Keysym::SPACE | Keysym::DOWN => self.start_conversion(LearningLookup::Use),
+            // Shift+←: convert with the last char split off, the way the
+            // built-in IME shortens the first 文節 straight from typing.
+            Keysym::LEFT
+                if key.modifiers.shift_key
+                    && matches!(
+                        self.mode.current(),
+                        InputMode::Hiragana | InputMode::Katakana
+                    ) =>
+            {
+                self.start_split_conversion()
+            }
             Keysym::LEFT => self.move_caret_left(),
             Keysym::RIGHT => self.move_caret_right(),
             Keysym::HOME => self.move_caret_home(),
