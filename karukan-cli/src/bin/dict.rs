@@ -6,7 +6,9 @@ use axum::{
     routing::get,
 };
 use clap::{Parser, Subcommand};
-use karukan_engine::dict::Dictionary;
+use karukan_engine::dict::{
+    DictSource, Dictionary, ReadingMap, detect_source, layer_readings, merge_readings, read_source,
+};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,23 +24,31 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Build a binary dictionary from JSON or Mozc TSV format.
+    /// Build a binary dictionary from one or more source files.
     ///
-    /// Supports two input formats:
-    /// - `json`: Array of {reading, candidates: [{surface, score}]}
-    /// - `mozc`: Mozc/Google IME TSV (reading\tword\tPOS\tcomment)
+    /// Formats (auto-detected per file, or forced for all with --format):
+    /// - `json`: Array of {reading, candidates: [{surface, score}]} (.json)
+    /// - `sudachi`: SudachiDict CSV (.csv)
+    /// - `mozc-system`: Mozc system dictionary TSV (reading\tlid\trid\tcost\tsurface)
+    /// - `mozc`: Mozc/Google IME user dictionary TSV (reading\tword\tPOS\tcomment)
     ///
-    /// Format is auto-detected from file extension (.json → JSON, otherwise → Mozc TSV),
-    /// or can be explicitly specified with --format.
+    /// The inputs are layers, in order: a (reading, surface) pair takes the
+    /// score of the first layer that has it, and a pair first seen in the
+    /// i-th layer is scored `score + 100000 * i`, so for the same reading an
+    /// earlier layer's words always sort before a later layer's. Adjacent
+    /// files of the same format form one layer (one dictionary shipped as
+    /// several files), a pair in two of them keeping the lower score.
     Build {
-        /// Input dictionary file (JSON or Mozc TSV)
-        input: PathBuf,
+        /// Input dictionary files, highest-priority first
+        #[arg(required = true)]
+        inputs: Vec<PathBuf>,
 
         /// Output binary dictionary file
         #[arg(short, long, default_value = "dict.bin")]
         output: PathBuf,
 
-        /// Input format: json or mozc (auto-detected from extension if omitted)
+        /// Input format for every file: json, sudachi, mozc-system or mozc
+        /// (auto-detected per file if omitted)
         #[arg(short, long)]
         format: Option<String>,
     },
@@ -80,25 +90,57 @@ enum Commands {
 
 // --- build subcommand ---
 
-fn run_build(input: PathBuf, output: PathBuf, format: Option<String>) -> Result<()> {
-    let format =
-        format
-            .as_deref()
-            .unwrap_or_else(|| match input.extension().and_then(|e| e.to_str()) {
-                Some("json") => "json",
-                _ => "mozc",
-            });
+/// Score step between layers: above every score any source produces
+/// (Sudachi's unknown-word fallback is 99999), so layer order is strict.
+const LAYER_STEP: f32 = 100_000.0;
 
-    eprintln!(
-        "Building dictionary from {:?} (format: {})...",
-        input, format
-    );
-
-    let dict = match format {
-        "json" => Dictionary::build_from_json(&input)?,
-        "mozc" => Dictionary::build_from_mozc_tsv(&input)?,
-        other => anyhow::bail!("Unknown format: {}. Use 'json' or 'mozc'.", other),
+fn run_build(inputs: Vec<PathBuf>, output: PathBuf, format: Option<String>) -> Result<()> {
+    let forced = match format.as_deref() {
+        Some(name) => Some(DictSource::from_name(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unknown format: {name}. Use 'json', 'sudachi', 'mozc-system' or 'mozc'."
+            )
+        })?),
+        None => None,
     };
+
+    // Adjacent files of one format are one dictionary split across files:
+    // fold them into one layer before laying it under the earlier ones.
+    let mut merged = ReadingMap::new();
+    let mut layer_index = 0usize;
+    let mut layer: Option<(DictSource, ReadingMap)> = None;
+    let mut flush = |layer: Option<(DictSource, ReadingMap)>, merged: &mut ReadingMap| {
+        if let Some((source, readings)) = layer {
+            let pairs: usize = readings.values().map(|s| s.len()).sum();
+            let added = layer_readings(merged, readings, LAYER_STEP * layer_index as f32);
+            eprintln!(
+                "Layer {layer_index} ({}): {pairs} pairs, {added} new",
+                source.name()
+            );
+            layer_index += 1;
+        }
+    };
+    for input in &inputs {
+        let source = match forced {
+            Some(source) => source,
+            None => detect_source(input)?,
+        };
+        eprintln!("Reading {:?} (format: {})...", input, source.name());
+        let readings = read_source(input, source)?;
+        match &mut layer {
+            Some((current, acc)) if *current == source => merge_readings(acc, readings),
+            _ => {
+                flush(layer.take(), &mut merged);
+                layer = Some((source, readings));
+            }
+        }
+    }
+    flush(layer.take(), &mut merged);
+
+    let readings = merged.len();
+    let pairs: usize = merged.values().map(|s| s.len()).sum();
+    eprintln!("Building trie: {pairs} pairs over {readings} readings...");
+    let dict = Dictionary::from_readings(merged)?;
 
     eprintln!("Saving to {:?}...", output);
     dict.save(&output)?;
@@ -320,10 +362,10 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Build {
-            input,
+            inputs,
             output,
             format,
-        } => run_build(input, output, format),
+        } => run_build(inputs, output, format),
         Commands::View {
             dicts,
             port,

@@ -124,7 +124,7 @@ cargo clippy --workspace  # Lint all crates
 
 ### karukan-cli (`karukan-cli/src/`)
 
-- `bin/dict.rs` — Dictionary tool: build (JSON or Mozc TSV → binary) and view (web UI + CLI search)
+- `bin/dict.rs` — Dictionary tool: build (one or more sources → binary; JSON, SudachiDict CSV, Mozc system TSV, Mozc/Google IME user TSV, auto-detected per file; adjacent files of one format form one layer, a dictionary split across files, and the layers stack in order: a pair keeps the first layer's score, a later layer's own words get `score + 100000·i` so they sort after an earlier layer's for the same reading) and view (web UI + CLI search). `scripts/build-dict.sh` builds the shipped dictionary from Mozc's dictionary → SudachiDict → dic-nico-intersection-pixiv
 - `bin/sudachi_dict.rs` — Sudachi dictionary → scored JSON converter
 - `bin/server.rs` — Axum HTTP API server
 - `bin/ajimee_bench.rs` — AJIMEE-Bench evaluation

@@ -31,7 +31,7 @@ IME本体(コアエンジン + 各プラットフォームのフロントエン�
 - **ライブ変換**: 入力と同時に変換結果をリアルタイム表示。Spaceを押さずに変換が進む（`Ctrl+Shift+L` でON/OFF）
 - **コンテキスト対応**: 周辺テキストを考慮した日本語変換
 - **変換学習**: ユーザーが選択した変換結果を記憶し、次回以降の変換で優先表示。予測変換（前方一致）にも対応し、入力途中でも学習済みの候補を提示
-- **システム辞書**: [SudachiDict](https://github.com/WorksApplications/SudachiDict)の辞書データからシステム辞書を構築
+- **システム辞書**: [Mozc](https://github.com/google/mozc) の辞書を土台に [SudachiDict](https://github.com/WorksApplications/SudachiDict) と [dic-nico-intersection-pixiv](https://github.com/ncaq/dic-nico-intersection-pixiv) を重ねてシステム辞書を構築
 - **候補リライター (Mozcから移植)**: 半角カタカナ、英字の大文字小文字・全角半角、記号の関連候補、数字の各種表記（漢数字・大字・ローマ数字・丸数字・16/8/2進数）を自動生成。各候補にはMozc由来の注釈（「半角カタカナ」「16進数」など）が付く
 - **絵文字入力**: かな読み（`ぴえん` → 🥺、`きんにく` → 💪）と Slack 風 `:trigger` クエリ（`:smile` → 😄、`:halo` → 😇）の両方をサポート
 

@@ -565,6 +565,237 @@ fn extend_candidates_unique(dst: &mut Vec<Candidate>, src: impl IntoIterator<Ite
     }
 }
 
+/// A source file's format, as [`detect_source`] tells them apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DictSource {
+    /// `[{reading, candidates: [{surface, score}]}]` (`.json`)
+    Json,
+    /// SudachiDict CSV (`.csv`), readings in katakana
+    SudachiCsv,
+    /// Mozc's system dictionary: `reading\tlid\trid\tcost\tsurface`
+    MozcSystem,
+    /// Mozc / Google IME user dictionary: `reading\tsurface\tPOS\tcomment`
+    MozcUser,
+}
+
+impl DictSource {
+    /// The `--format` names.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "json" => Some(Self::Json),
+            "sudachi" => Some(Self::SudachiCsv),
+            "mozc-system" => Some(Self::MozcSystem),
+            "mozc" => Some(Self::MozcUser),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::SudachiCsv => "sudachi",
+            Self::MozcSystem => "mozc-system",
+            Self::MozcUser => "mozc",
+        }
+    }
+}
+
+/// Tell a source file's format: by extension for JSON and Sudachi CSV, else
+/// by the shape of its first data line — five tab-separated columns with
+/// integer ids and cost in the middle is Mozc's system dictionary, anything
+/// else the user-dictionary TSV.
+pub fn detect_source(path: &Path) -> Result<DictSource> {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("json") => return Ok(DictSource::Json),
+        Some("csv") => return Ok(DictSource::SudachiCsv),
+        _ => {}
+    }
+    let file = File::open(path)?;
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        let line = line.trim_end();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        return Ok(if is_mozc_system_line(line) {
+            DictSource::MozcSystem
+        } else {
+            DictSource::MozcUser
+        });
+    }
+    Ok(DictSource::MozcUser)
+}
+
+fn is_mozc_system_line(line: &str) -> bool {
+    let cols: Vec<&str> = line.split('\t').collect();
+    cols.len() == 5 && cols[1..4].iter().all(|c| c.parse::<i32>().is_ok())
+}
+
+/// Reading → surface → score, readings in hiragana: the shape every source
+/// is read into before the layers are merged ([`layer_readings`]).
+pub type ReadingMap = HashMap<String, HashMap<String, f32>>;
+
+/// Read one source file into a [`ReadingMap`]. Katakana readings (Sudachi)
+/// become hiragana; a (reading, surface) pair listed twice keeps its lowest
+/// score.
+pub fn read_source(path: &Path, source: DictSource) -> Result<ReadingMap> {
+    match source {
+        DictSource::Json => read_json(path),
+        DictSource::SudachiCsv => Ok(costs_to_readings(parse_sudachi_csv(path)?)),
+        DictSource::MozcSystem => Ok(costs_to_readings(parse_mozc_system_tsv(path)?)),
+        DictSource::MozcUser => read_mozc_user_tsv(path),
+    }
+}
+
+/// Parse Mozc's system dictionary (`reading\tlid\trid\tcost\tsurface`) into
+/// reading → {surface → min cost}. Lines without an integer cost, or with an
+/// empty reading or surface, are skipped.
+pub fn parse_mozc_system_tsv(path: &Path) -> Result<HashMap<String, HashMap<String, i32>>> {
+    let file = File::open(path)?;
+    let mut map: HashMap<String, HashMap<String, i32>> = HashMap::new();
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        let cols: Vec<&str> = line.split('\t').collect();
+        if cols.len() < 5 {
+            continue;
+        }
+        let Ok(cost) = cols[3].trim().parse::<i32>() else {
+            continue;
+        };
+        let reading = cols[0].trim();
+        let surface = cols[4].trim();
+        if reading.is_empty() || surface.is_empty() {
+            continue;
+        }
+        insert_min_cost(
+            map.entry(reading.to_string()).or_default(),
+            surface.to_string(),
+            cost,
+        );
+    }
+    Ok(map)
+}
+
+/// Integer costs to scores, readings folded to hiragana (two katakana
+/// readings folding onto one keep the lower cost per surface).
+fn costs_to_readings(costs: HashMap<String, HashMap<String, i32>>) -> ReadingMap {
+    let mut map = ReadingMap::new();
+    for (reading, surfaces) in costs {
+        let entry = map.entry(katakana_to_hiragana(&reading)).or_default();
+        for (surface, cost) in surfaces {
+            let score = cost as f32;
+            entry
+                .entry(surface)
+                .and_modify(|s| *s = s.min(score))
+                .or_insert(score);
+        }
+    }
+    map
+}
+
+fn read_json(path: &Path) -> Result<ReadingMap> {
+    let file = File::open(path)?;
+    let json_entries: Vec<JsonEntry> = serde_json::from_reader(BufReader::new(file))?;
+    let mut map = ReadingMap::new();
+    for je in json_entries {
+        let entry = map.entry(katakana_to_hiragana(&je.reading)).or_default();
+        for jc in je.candidates {
+            entry
+                .entry(jc.surface)
+                .and_modify(|s| *s = s.min(jc.score))
+                .or_insert(jc.score);
+        }
+    }
+    Ok(map)
+}
+
+/// The user-dictionary TSV carries no cost: a reading's surfaces are scored
+/// by their order in the file (0, 1, 2, …), so the order survives the merge.
+fn read_mozc_user_tsv(path: &Path) -> Result<ReadingMap> {
+    let mut map = ReadingMap::new();
+    for (reading, surface) in parse_mozc_user_tsv(path)? {
+        let entry = map.entry(katakana_to_hiragana(&reading)).or_default();
+        let next = entry.len() as f32;
+        entry.entry(surface).or_insert(next);
+    }
+    Ok(map)
+}
+
+/// (reading, surface) pairs of a Mozc / Google IME user-dictionary TSV, in
+/// file order. Comment lines and lines short of two columns are skipped.
+fn parse_mozc_user_tsv(path: &Path) -> Result<Vec<(String, String)>> {
+    let file = File::open(path)?;
+    let mut pairs = Vec::new();
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let cols: Vec<&str> = line.split('\t').collect();
+        if cols.len() < 2 || cols[0].is_empty() || cols[1].is_empty() {
+            continue;
+        }
+        pairs.push((cols[0].to_string(), cols[1].to_string()));
+    }
+    Ok(pairs)
+}
+
+/// Fold `other` into `base` as parts of one dictionary: a (reading,
+/// surface) both have keeps the lower score. For a dictionary shipped as
+/// several files (Mozc's `dictionary00〜09.txt`, SudachiDict's small /
+/// core / notcore).
+pub fn merge_readings(base: &mut ReadingMap, other: ReadingMap) {
+    for (reading, surfaces) in other {
+        let entry = base.entry(reading).or_default();
+        for (surface, score) in surfaces {
+            entry
+                .entry(surface)
+                .and_modify(|s| *s = s.min(score))
+                .or_insert(score);
+        }
+    }
+}
+
+/// Lay `layer` under `base`: a (reading, surface) `base` already has keeps
+/// its score, and one only `layer` has joins at `score + offset`. With an
+/// offset above every score in play, a later layer's words sort after an
+/// earlier layer's for the same reading, in their own order. Returns how
+/// many pairs joined.
+pub fn layer_readings(base: &mut ReadingMap, layer: ReadingMap, offset: f32) -> usize {
+    let mut added = 0;
+    for (reading, surfaces) in layer {
+        let entry = base.entry(reading).or_default();
+        for (surface, score) in surfaces {
+            entry.entry(surface).or_insert_with(|| {
+                added += 1;
+                score + offset
+            });
+        }
+    }
+    added
+}
+
+impl Dictionary {
+    /// Build a dictionary from a [`ReadingMap`] (empty readings and
+    /// readings with no surfaces dropped).
+    pub fn from_readings(map: ReadingMap) -> Result<Self> {
+        let mut entries: Vec<DictEntry> = map
+            .into_iter()
+            .filter(|(reading, surfaces)| !reading.is_empty() && !surfaces.is_empty())
+            .map(|(reading, surfaces)| DictEntry {
+                reading,
+                candidates: surfaces
+                    .into_iter()
+                    .map(|(surface, score)| Candidate { surface, score })
+                    .collect(),
+            })
+            .collect();
+        entries.sort_by(|a, b| a.reading.as_bytes().cmp(b.reading.as_bytes()));
+        Self::build_from_entries(entries)
+    }
+}
+
 /// Unescape `\uXXXX` Unicode escape sequences in a string.
 ///
 /// Sudachi CSV files contain literal `\uXXXX` sequences (e.g. `\u0028` for `(`)
@@ -1123,5 +1354,124 @@ col0,col1,col2,4500,今日,col5,col6,col7,col8,col9,col10,キョウ
         let map = parse_sudachi_csv(f.path()).unwrap();
         assert_eq!(map.len(), 1);
         assert!(map.contains_key("オッケー"));
+    }
+}
+
+#[cfg(test)]
+mod layer_tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn temp(name_suffix: &str, content: &str) -> NamedTempFile {
+        let mut f = tempfile::Builder::new()
+            .suffix(name_suffix)
+            .tempfile()
+            .unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    #[test]
+    fn mozc_system_tsv_keeps_min_cost_and_skips_junk() {
+        let f = temp(
+            ".txt",
+            "きょう\t1\t1\t300\t今日\nきょう\t2\t2\t100\t今日\nきょう\t1\t1\t500\t京\n\
+             \t1\t1\t10\t空読み\nきょう\t1\t1\t10\t\nきょう\tx\ty\tz\t数値でない\n",
+        );
+        let map = parse_mozc_system_tsv(f.path()).unwrap();
+        assert_eq!(map.len(), 1);
+        assert_eq!(map["きょう"]["今日"], 100);
+        assert_eq!(map["きょう"]["京"], 500);
+        assert_eq!(map["きょう"].len(), 2);
+    }
+
+    #[test]
+    fn detect_source_by_extension_then_shape() {
+        assert_eq!(
+            detect_source(temp(".json", "[]").path()).unwrap(),
+            DictSource::Json
+        );
+        assert_eq!(
+            detect_source(temp(".csv", "").path()).unwrap(),
+            DictSource::SudachiCsv
+        );
+        let system = temp(".txt", "# comment\nきょう\t1851\t1851\t7129\t今日\n");
+        assert_eq!(
+            detect_source(system.path()).unwrap(),
+            DictSource::MozcSystem
+        );
+        let user = temp(".txt", "きょう\t今日\t名詞\tコメント\n");
+        assert_eq!(detect_source(user.path()).unwrap(), DictSource::MozcUser);
+    }
+
+    #[test]
+    fn layers_keep_the_first_score_and_offset_newcomers() {
+        let mut base = read_source(
+            temp(".txt", "きょう\t1\t1\t121\t今日\nきょう\t1\t1\t3688\t強\n").path(),
+            DictSource::MozcSystem,
+        )
+        .unwrap();
+        let sudachi = temp(
+            ".csv",
+            "今日,1,1,4115,今日,名詞,普通名詞,一般,*,*,*,キョウ,今日,*,A,*,*,*,*\n\
+             経,1,1,6320,経,名詞,普通名詞,一般,*,*,*,キョウ,経,*,A,*,*,*,*\n",
+        );
+        let layer = read_source(sudachi.path(), DictSource::SudachiCsv).unwrap();
+        let added = layer_readings(&mut base, layer, 100_000.0);
+        assert_eq!(added, 1);
+        // The pair both layers have keeps the first layer's score; the
+        // newcomer sorts after everything in the first layer.
+        assert_eq!(base["きょう"]["今日"], 121.0);
+        assert_eq!(base["きょう"]["強"], 3688.0);
+        assert_eq!(base["きょう"]["経"], 106_320.0);
+
+        let dict = Dictionary::from_readings(base).unwrap();
+        let surfaces: Vec<&str> = dict
+            .exact_match_search("きょう")
+            .unwrap()
+            .candidates
+            .iter()
+            .map(|c| c.surface.as_str())
+            .collect();
+        assert_eq!(surfaces, ["今日", "強", "経"]);
+    }
+
+    #[test]
+    fn merge_readings_keeps_the_lower_score_across_files() {
+        let mut base = ReadingMap::new();
+        base.entry("きょう".into())
+            .or_default()
+            .insert("今日".into(), 300.0);
+        let mut other = ReadingMap::new();
+        let surfaces = other.entry("きょう".into()).or_default();
+        surfaces.insert("今日".into(), 100.0);
+        surfaces.insert("京".into(), 500.0);
+        merge_readings(&mut base, other);
+        assert_eq!(base["きょう"]["今日"], 100.0);
+        assert_eq!(base["きょう"]["京"], 500.0);
+    }
+
+    #[test]
+    fn user_tsv_layer_keeps_file_order() {
+        let f = temp(
+            ".txt",
+            "あい\t藍\t固有名詞\t\nあい\t愛\t固有名詞\t\nあい\t藍\t固有名詞\t\n",
+        );
+        let map = read_source(f.path(), DictSource::MozcUser).unwrap();
+        assert_eq!(map["あい"]["藍"], 0.0);
+        assert_eq!(map["あい"]["愛"], 1.0);
+        assert_eq!(map["あい"].len(), 2);
+    }
+
+    #[test]
+    fn json_source_folds_katakana_readings() {
+        let f = temp(
+            ".json",
+            r#"[{"reading":"キョウ","candidates":[{"surface":"今日","score":1.5}]}]"#,
+        );
+        let map = read_source(f.path(), DictSource::Json).unwrap();
+        assert_eq!(map["きょう"]["今日"], 1.5);
     }
 }

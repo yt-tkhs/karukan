@@ -7,7 +7,7 @@ karukan はモデル推論に加えて、システム辞書・ユーザー辞書
 
 ## System Dictionary
 
-double-array trieベースのシステム辞書です。
+double-array trieベースのシステム辞書です。配布している `dict.bin` は Mozc の辞書（並び順と日常語彙）に SudachiDict（固有名詞・複合語）と dic-nico-intersection-pixiv（ネット用語・作品名）を重ねたもので、同じ読みの中では先のデータの語が先に並びます（重ね方の規則とライセンスは [karukan-cli の README](../karukan-cli/README.md) と [Notice](../karukan-cli/docs/README.md)）。
 
 - デフォルトパス: `~/.local/share/karukan-im/dict.bin`（macOS: `~/Library/Application Support/com.karukan.karukan-im/dict.bin`）
 - `dict_path` で任意のパスを指定可能（[Configuration](configuration.md) 参照）

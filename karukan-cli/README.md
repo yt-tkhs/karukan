@@ -24,28 +24,45 @@ cargo build -p karukan-cli --release
 
 ### build — 辞書ビルド
 
-JSON または Mozc TSV 形式の入力ファイルからバイナリ辞書を生成します。
+1 つ以上の入力ファイルからバイナリ辞書を生成します。入力は指定した順にレイヤーとして重なります。
 
 ```bash
-# JSON形式（拡張子で自動判定）
+# 1 ファイル（形式は自動判定）
 cargo run --release --bin karukan-dict -- build input.json -o dict.bin
 
-# Mozc TSV形式
-cargo run --release --bin karukan-dict -- build mozc.tsv -o dict.bin
+# 複数ファイルを重ねる: Mozc 辞書 → SudachiDict → Google IME 形式の辞書
+cargo run --release --bin karukan-dict -- build \
+  dictionary0?.txt small_lex.csv core_lex.csv notcore_lex.csv extra.txt -o dict.bin
 
-# フォーマットを明示指定
-cargo run --release --bin karukan-dict -- build input.txt --format json -o dict.bin
+# フォーマットを明示指定（全入力に適用）
+cargo run --release --bin karukan-dict -- build input.txt --format mozc -o dict.bin
 ```
 
 | オプション | デフォルト | 説明 |
 |-----------|----------|------|
-| `input` (必須) | — | 入力ファイル（JSON or Mozc TSV） |
+| `inputs` (必須) | — | 入力ファイル（1 つ以上、優先度の高い順） |
 | `-o, --output` | `dict.bin` | 出力バイナリ辞書ファイル |
-| `-f, --format` | 自動判定 | 入力形式: `json` or `mozc` |
+| `-f, --format` | 自動判定 | 全入力の形式: `json` / `sudachi` / `mozc-system` / `mozc` |
 
-**入力形式:**
-- `json`: `[{reading, candidates: [{surface, score}]}]` の配列
-- `mozc`: Mozc/Google IME TSV（`reading\tword\tPOS\tcomment`）
+**入力形式（ファイルごとに自動判定）:**
+
+| 形式 | 判定 | 内容 |
+|------|------|------|
+| `json` | 拡張子 `.json` | `[{reading, candidates: [{surface, score}]}]` の配列 |
+| `sudachi` | 拡張子 `.csv` | SudachiDict の CSV（読みはカタカナ。ひらがなに正規化する） |
+| `mozc-system` | タブ区切り 5 列で 2〜4 列目が整数 | Mozc のシステム辞書（`読み\t左ID\t右ID\tコスト\t表記`） |
+| `mozc` | それ以外のタブ区切り | Mozc/Google IME のユーザー辞書（`読み\t表記\t品詞\tコメント`）。コストが無いのでファイル内の順で採点する |
+
+**レイヤーの規則:** 隣り合う同じ形式のファイルは 1 つのレイヤー（1 つの辞書が複数ファイルに分かれたもの。Mozc の `dictionary00〜09.txt` や SudachiDict の small / core / notcore）として扱い、両方にある（読み, 表記）は低い方のコストを取ります。ある（読み, 表記）のスコアは、それを最初に持っていたレイヤーのものになります。i 番目（0 始まり）のレイヤーで初めて現れた語は `スコア + 100000 × i` になるので、同じ読みの中では前のレイヤーの語が後のレイヤーの語より必ず先に並び、各レイヤーの中では元のコスト順が保たれます。前方一致（予測）の並びでも同じ差が効きます。
+
+配布している `dict.bin` はこの規則で Mozc 辞書・SudachiDict・dic-nico-intersection-pixiv を重ねたものです。`scripts/build-dict.sh` がデータの取得からビルドまでを行います（[docs/README.md](docs/README.md) にデータ源とライセンス）。
+
+```bash
+# リポジトリのルートで。build/dict/ にダウンロードして dict.tgz を作る
+scripts/build-dict.sh
+# ニコニコ大百科・ピクシブ百科事典由来の辞書を外す
+scripts/build-dict.sh --without-nico
+```
 
 ### view — 辞書ビューア
 
