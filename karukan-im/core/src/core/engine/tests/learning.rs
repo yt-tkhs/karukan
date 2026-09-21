@@ -218,6 +218,7 @@ fn init_learning_cache_applies_configured_surface_cap() {
         LearningConfig {
             max_entries: 10_000,
             max_surface_chars: 5,
+            ..LearningConfig::default()
         },
     );
     let cache = engine.learning.as_mut().expect("learning enabled");
@@ -457,5 +458,133 @@ fn space_key_keeps_learning_in_composing() {
         texts.contains(&"藍".to_string()),
         "Space must surface learned `藍`, got {:?}",
         texts,
+    );
+}
+
+// ---- Long one-off commits stay out of the predictions ----------------
+
+/// A live-converted sentence, committed once with Enter.
+const SENTENCE_READING: &str = "きょうはかいぎがあるのではやめにかえります";
+const SENTENCE: &str = "今日は会議があるので早めに帰ります";
+
+/// Type `romaji` key by key and return the last result.
+fn type_romaji(engine: &mut InputMethodEngine, romaji: &str) -> EngineResult {
+    let mut result = None;
+    for ch in romaji.chars() {
+        result = Some(engine.process_key(&press(ch)));
+    }
+    result.expect("at least one key")
+}
+
+/// Texts of the candidate list a result shows (empty if it shows none).
+fn shown_candidates(result: &EngineResult) -> Vec<String> {
+    result
+        .actions
+        .iter()
+        .rev()
+        .find_map(|a| match a {
+            EngineAction::ShowCandidates(list) => {
+                Some(list.candidates().iter().map(|c| c.text.clone()).collect())
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// Texts of the open conversion list.
+fn conversion_texts(engine: &InputMethodEngine) -> Vec<String> {
+    engine
+        .state()
+        .candidates()
+        .expect("conversion candidates")
+        .candidates()
+        .iter()
+        .map(|c| c.text.clone())
+        .collect()
+}
+
+#[test]
+fn sentence_committed_once_is_not_predicted_from_its_first_kana() {
+    // Before the cap, the sentence headed both the composing suggestions
+    // and Space's list for every later 「きょう」 — Space+Enter would have
+    // committed it in place of the four kana actually typed.
+    let mut engine = engine_with_learned(SENTENCE_READING, SENTENCE);
+    engine.learning.as_mut().unwrap().record("きょうと", "京都");
+
+    let suggested = shown_candidates(&type_romaji(&mut engine, "kyou"));
+    assert!(
+        suggested.contains(&"京都".to_string()),
+        "a learned word still predicts, got {suggested:?}",
+    );
+    assert!(
+        !suggested.contains(&SENTENCE.to_string()),
+        "a sentence committed once must not be suggested from 「きょう」, got {suggested:?}",
+    );
+
+    engine.process_key(&press_key(Keysym::SPACE));
+    let texts = conversion_texts(&engine);
+    assert!(texts.contains(&"京都".to_string()), "got {texts:?}");
+    assert!(!texts.contains(&SENTENCE.to_string()), "got {texts:?}");
+}
+
+#[test]
+fn sentence_committed_twice_is_predicted() {
+    let mut engine = engine_with_learned(SENTENCE_READING, SENTENCE);
+    let suggested = shown_candidates(&type_romaji(&mut engine, "kyou"));
+    assert!(
+        !suggested.contains(&SENTENCE.to_string()),
+        "got {suggested:?}"
+    );
+    engine.process_key(&press_key(Keysym::ESCAPE));
+    assert!(matches!(engine.state(), InputState::Empty));
+
+    // The second commit makes it habitual — the greeting typed every day.
+    engine
+        .learning
+        .as_mut()
+        .unwrap()
+        .record(SENTENCE_READING, SENTENCE);
+    let suggested = shown_candidates(&type_romaji(&mut engine, "kyou"));
+    assert!(
+        suggested.contains(&SENTENCE.to_string()),
+        "a sentence committed twice is predicted, got {suggested:?}",
+    );
+}
+
+#[test]
+fn long_entry_still_matches_exactly() {
+    // Eleven kana, over the default cap — typed in full, the learned
+    // surface leads the list as it always did.
+    let mut engine = engine_with_learned("おせわになっております", "お世話になっております");
+    type_romaji(&mut engine, "osewaninatteorimasu");
+    assert_eq!(engine.input_buf.reading(), "おせわになっております");
+
+    engine.process_key(&press_key(Keysym::SPACE));
+    let texts = conversion_texts(&engine);
+    assert_eq!(
+        texts.first().map(String::as_str),
+        Some("お世話になっております"),
+        "got {texts:?}"
+    );
+}
+
+#[test]
+fn long_entry_stays_in_the_learning_view() {
+    // The Ctrl+R/T learning view is the history browser: everything, so a
+    // held-back sentence can still be found (and deleted) there.
+    let mut engine = engine_with_learned("おせわになっております", "お世話になっております");
+    let suggested = shown_candidates(&type_romaji(&mut engine, "ose"));
+    assert!(
+        !suggested.contains(&"お世話になっております".to_string()),
+        "got {suggested:?}"
+    );
+
+    // Ctrl+T while composing opens the conversion narrowed to the first
+    // stop of the cycle, the learning view.
+    engine.process_key(&press_ctrl(Keysym::KEY_T));
+    let texts = conversion_texts(&engine);
+    assert!(
+        texts.contains(&"お世話になっております".to_string()),
+        "the learning view keeps long entries, got {texts:?}",
     );
 }

@@ -209,6 +209,10 @@ pub struct LearningSettings {
     /// cache; longer conversion results (e.g. whole live-converted
     /// sentences) are not learned
     pub max_surface_chars: usize,
+    /// Longest reading (in characters) a learned entry may have and still
+    /// be predicted from a typed prefix after a single commit; a longer one
+    /// is predicted only once committed twice. Exact matches are unaffected
+    pub max_predictive_chars: usize,
 }
 
 impl Default for Settings {
@@ -379,6 +383,7 @@ mod tests {
         assert!(settings.learning.enabled);
         assert_eq!(settings.learning.max_entries, 10000);
         assert_eq!(settings.learning.max_surface_chars, 50);
+        assert_eq!(settings.learning.max_predictive_chars, 4);
     }
 
     #[test]
@@ -476,6 +481,7 @@ max_surface_chars = 10
         assert_eq!(settings.learning.max_surface_chars, 10);
         assert!(settings.learning.enabled);
         assert_eq!(settings.learning.max_entries, 10000);
+        assert_eq!(settings.learning.max_predictive_chars, 4);
     }
 
     #[test]
