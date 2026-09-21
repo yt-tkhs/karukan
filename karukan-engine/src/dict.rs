@@ -212,7 +212,10 @@ impl Dictionary {
         // Trie
         r.read_exact(&mut buf4)?;
         let trie_len = u32::from_le_bytes(buf4) as usize;
-        const MAX_TRIE_LEN: usize = 100 * 1024 * 1024; // 100 MB
+        // A sanity bound against a corrupt header, not a size target: the
+        // layered Mozc + SudachiDict dictionary's trie is 91 MB, and one
+        // with jawiki added runs past 100 MB.
+        const MAX_TRIE_LEN: usize = 512 * 1024 * 1024; // 512 MB
         if trie_len > MAX_TRIE_LEN {
             return Err(DictError::Format(format!(
                 "trie_len too large: {} (max {})",
