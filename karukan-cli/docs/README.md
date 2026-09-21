@@ -19,5 +19,14 @@
    主張しない」としています。元データはニコニコ大百科 <https://dic.nicovideo.jp/> と
    ピクシブ百科事典 <https://dic.pixiv.net/> です。
 
+4. **Mozc の顔文字データ** (`src/data/emoticon/emoticon.tsv`)
+   <https://github.com/google/mozc>
+   読みごとに 1 行へ展開して、3 と同じ層に重ねています。BSD 3-Clause License（[LEGAL-mozc](./LEGAL-mozc)）。
+
 本辞書バイナリは、上記のうち最も制約の強い Apache License, Version 2.0 の下で配布しています。
 詳細は [LICENSE-2.0.txt](./LICENSE-2.0.txt) をご覧ください。
+
+`scripts/build-dict.sh --with-jawiki` を付けると、SudachiDict の後ろに
+**mozcdic-ut-jawiki**（<https://github.com/utuhiro78/mozcdic-ut-jawiki>、Wikipedia の見出し語
+約 125 万件）が加わります。このデータは CC BY-SA なので、それを含めた辞書を配布するときは
+CC BY-SA の表示と継承が必要です。配布用の `dict.tgz` には既定で含めていません。

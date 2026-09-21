@@ -62,7 +62,11 @@ cargo run --release --bin karukan-dict -- build input.txt --format mozc -o dict.
 scripts/build-dict.sh
 # ニコニコ大百科・ピクシブ百科事典由来の辞書を外す
 scripts/build-dict.sh --without-nico
+# Wikipedia の見出し語（mozcdic-ut-jawiki、CC BY-SA）を足す。手元用向け
+scripts/build-dict.sh --with-jawiki
 ```
+
+Mozc の顔文字データ（emoticon.tsv）は常に最後の層に入ります（「にこ」→ (^^) など）。
 
 ### view — 辞書ビューア
 
