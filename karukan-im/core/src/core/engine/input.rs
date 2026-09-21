@@ -89,9 +89,17 @@ impl InputMethodEngine {
     fn suggest_result(&mut self, candidates: Vec<String>, reading: &str) -> EngineResult {
         let preedit = self.set_composing_state();
         let mut all_candidates = self.lookup_learning_candidates(reading);
+        // Tagged as the model's so `settle_candidates` gives them the
+        // configured width, as the preedit above them already has: the
+        // model answers half-width whatever was typed.
         let model_candidates: Vec<Candidate> = candidates
             .into_iter()
-            .map(|s| Candidate::with_reading(s, reading))
+            .map(|text| Candidate {
+                text,
+                reading: Some(reading.to_string()),
+                source: Some(CandidateSource::Model),
+                description: None,
+            })
             .collect();
         append_candidates_dedup(&mut all_candidates, model_candidates);
         append_candidates_dedup(&mut all_candidates, self.lookup_dict_candidates(reading));

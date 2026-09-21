@@ -371,3 +371,40 @@ fn model_output_spaces_follow_the_space_setting() {
     let result = engine.process_key(&press_key(Keysym::RETURN));
     assert_eq!(committed(&result).as_deref(), Some("亜　井"));
 }
+
+#[test]
+fn model_suggestions_take_the_configured_width_like_the_preedit() {
+    // With full-width ASCII symbols the live preedit shows 「亜？」; the
+    // suggestion list right under it used to show the model's raw 「亜?」.
+    let mut engine = InputMethodEngine::with_config(EngineConfig {
+        width: WidthRules {
+            ascii_symbol: Width::Full,
+            ..WidthRules::default()
+        },
+        live_conversion: true,
+        ..EngineConfig::default()
+    });
+    seed_model_cache(&mut engine, "ア？", "", &["亜?"]);
+    engine.process_key(&press('a'));
+    let result = engine.process_key(&press('?'));
+    assert_eq!(shown_preedit(&result).as_deref(), Some("亜？"));
+    let suggested: Vec<String> = result
+        .actions
+        .iter()
+        .rev()
+        .find_map(|a| match a {
+            EngineAction::ShowCandidates(list) => {
+                Some(list.candidates().iter().map(|c| c.text.clone()).collect())
+            }
+            _ => None,
+        })
+        .expect("suggestion list");
+    assert!(
+        suggested.iter().any(|t| t == "亜？"),
+        "the model's suggestion must be settled to the configured width, got {suggested:?}"
+    );
+    assert!(
+        !suggested.iter().any(|t| t == "亜?"),
+        "the raw half-width answer must not survive beside it, got {suggested:?}"
+    );
+}
