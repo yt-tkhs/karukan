@@ -384,7 +384,7 @@ mod tests {
         assert!(settings.learning.enabled);
         assert_eq!(settings.learning.max_entries, 10000);
         assert_eq!(settings.learning.max_surface_chars, 50);
-        assert_eq!(settings.conversion.predict_extra_chars, 4);
+        assert_eq!(settings.conversion.predict_extra_chars, 0);
     }
 
     #[test]
