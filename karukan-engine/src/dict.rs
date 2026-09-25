@@ -293,13 +293,20 @@ impl Dictionary {
     }
 
     /// Predictive search: candidates whose reading strictly extends `prefix`
-    /// (a reading equal to `prefix` is excluded — that's `exact_match_search`).
+    /// (a reading equal to `prefix` is excluded — that's `exact_match_search`)
+    /// by at most `max_extra` chars, so a long word comes up only once the
+    /// typing is within reach of its end.
     ///
     /// Ranked ascending by `score + 500·ln(50·remaining_chars)`: scores are
     /// -500·log(p) costs, so demoting longer completions stays on the same
     /// scale and a common long word can still beat a rare short one.
     /// Relies on `entries` being sorted by reading (the build invariant).
-    pub fn predictive_search(&self, prefix: &str, limit: usize) -> Vec<PredictiveMatch<'_>> {
+    pub fn predictive_search(
+        &self,
+        prefix: &str,
+        limit: usize,
+        max_extra: usize,
+    ) -> Vec<PredictiveMatch<'_>> {
         if prefix.is_empty() {
             return Vec::new();
         }
@@ -308,19 +315,21 @@ impl Dictionary {
             .filter(|(_, e)| e.reading != prefix)
             .map(|(_, e)| e)
             .collect();
-        Self::rank_predictive(pool, prefix.chars().count(), limit)
+        Self::rank_predictive(pool, prefix.chars().count(), limit, max_extra)
     }
 
     /// Predictive search narrowed by a still-unresolved romaji tail: the
     /// completion after `base` must begin with one of `expansions` (the
     /// kana that tail can become). わせ + `d` matches わせだ… but not
-    /// わせり…. Ranking is the same as [`Self::predictive_search`], with
-    /// the completion length measured from `base`.
+    /// わせり…. Ranking and the `max_extra` cap are the same as
+    /// [`Self::predictive_search`], with the completion length measured
+    /// from `base`.
     pub fn predictive_search_expanded(
         &self,
         base: &str,
         expansions: &[String],
         limit: usize,
+        max_extra: usize,
     ) -> Vec<PredictiveMatch<'_>> {
         let mut seen = HashSet::new();
         let mut pool = Vec::new();
@@ -332,7 +341,7 @@ impl Dictionary {
                 }
             }
         }
-        Self::rank_predictive(pool, base.chars().count(), limit)
+        Self::rank_predictive(pool, base.chars().count(), limit, max_extra)
     }
 
     /// Entries whose reading starts with `prefix`, with their indices.
@@ -352,17 +361,21 @@ impl Dictionary {
             .map(move |(i, e)| (start + i, e))
     }
 
-    /// Rank predictive matches by `score + 500·ln(50·remaining_chars)`.
+    /// Rank predictive matches by `score + 500·ln(50·remaining_chars)`,
+    /// readings running more than `max_extra` chars past the typing left
+    /// out.
     fn rank_predictive<'a>(
         pool: Vec<&'a DictEntry>,
         base_chars: usize,
         limit: usize,
+        max_extra: usize,
     ) -> Vec<PredictiveMatch<'a>> {
         if limit == 0 {
             return Vec::new();
         }
         let mut ranked: Vec<(f32, PredictiveMatch<'a>)> = pool
             .into_iter()
+            .filter(|entry| entry.reading.chars().count() - base_chars <= max_extra)
             .flat_map(|entry| {
                 let remaining = (entry.reading.chars().count() - base_chars) as f32;
                 let penalty = 500.0 * (50.0 * remaining).ln();
@@ -1011,7 +1024,7 @@ mod tests {
         f.flush().unwrap();
         let dict = Dictionary::build_from_json(f.path()).unwrap();
 
-        let matches = dict.predictive_search("わせ", 10);
+        let matches = dict.predictive_search("わせ", 10, usize::MAX);
         let surfaces: Vec<&str> = matches
             .iter()
             .map(|m| m.candidate.surface.as_str())
@@ -1021,12 +1034,49 @@ mod tests {
         assert_eq!(matches[1].reading, "わせだだいがく");
 
         // Limit caps the ranked result
-        let top = dict.predictive_search("わせ", 1);
+        let top = dict.predictive_search("わせ", 1, usize::MAX);
         assert_eq!(top.len(), 1);
         assert_eq!(top[0].candidate.surface, "和船");
 
-        assert!(dict.predictive_search("", 10).is_empty());
-        assert!(dict.predictive_search("わせだだいがくいん", 10).is_empty());
+        assert!(dict.predictive_search("", 10, usize::MAX).is_empty());
+        assert!(
+            dict.predictive_search("わせだだいがくいん", 10, usize::MAX)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_predictive_search_caps_the_extension() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(
+            r#"[
+                {"reading":"ワセダ","candidates":[{"surface":"早稲田","score":100.0}]},
+                {"reading":"ワセダダイガク","candidates":[{"surface":"早稲田大学","score":100.0}]}
+            ]"#
+            .as_bytes(),
+        )
+        .unwrap();
+        let dict = Dictionary::build_from_json(f.path()).unwrap();
+
+        // 「わせ」: 早稲田 runs 1 char past it, 早稲田大学 5. With 4 allowed the
+        // long one waits.
+        let surfaces = |prefix: &str, max_extra: usize| -> Vec<String> {
+            dict.predictive_search(prefix, 10, max_extra)
+                .into_iter()
+                .map(|m| m.candidate.surface.clone())
+                .collect()
+        };
+        assert_eq!(surfaces("わせ", 4), ["早稲田"]);
+        // Typed to within reach, it comes up.
+        assert_eq!(surfaces("わせだ", 4), ["早稲田大学"]);
+        assert_eq!(surfaces("わせ", usize::MAX).len(), 2);
+        // The narrowed search measures from the base the same way.
+        let expansions = vec!["だ".to_string()];
+        assert_eq!(
+            dict.predictive_search_expanded("わせ", &expansions, 10, 4)
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -1047,7 +1097,7 @@ mod tests {
         // Pending `d` narrows to だ/で/ど… readings: ワセリン drops out.
         // 早稲田 1000+500·ln(50·1)≈2956 ranks above 早稲田大学 500+500·ln(50·5)≈3261
         let expansions = vec!["だ".to_string(), "で".to_string(), "ど".to_string()];
-        let matches = dict.predictive_search_expanded("わせ", &expansions, 10);
+        let matches = dict.predictive_search_expanded("わせ", &expansions, 10, usize::MAX);
         let surfaces: Vec<&str> = matches
             .iter()
             .map(|m| m.candidate.surface.as_str())
@@ -1056,10 +1106,13 @@ mod tests {
 
         // Overlapping expansions don't duplicate entries
         let overlapping = vec!["だ".to_string(), "だだ".to_string()];
-        let matches = dict.predictive_search_expanded("わせ", &overlapping, 10);
+        let matches = dict.predictive_search_expanded("わせ", &overlapping, 10, usize::MAX);
         assert_eq!(matches.len(), 2);
 
-        assert!(dict.predictive_search_expanded("わせ", &[], 10).is_empty());
+        assert!(
+            dict.predictive_search_expanded("わせ", &[], 10, usize::MAX)
+                .is_empty()
+        );
     }
 
     #[test]

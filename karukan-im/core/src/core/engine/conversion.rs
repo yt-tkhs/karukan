@@ -96,6 +96,17 @@ impl<'a> ConversionQuery<'a> {
     }
 }
 
+/// How far a dictionary search predicts past the typing.
+#[derive(Clone, Copy)]
+pub(super) struct PredictiveReach {
+    /// Cap on predictive matches (0 turns prediction off)
+    pub limit: usize,
+    /// Chars a match's reading may run past the typing
+    pub extra_chars: usize,
+    /// Typed chars before prediction kicks in
+    pub min_prefix_chars: usize,
+}
+
 /// How the unresolved romaji tail constrains the predictive lookup.
 enum TailConstraint {
     /// No tail: prediction is unconstrained
@@ -445,15 +456,15 @@ impl InputMethodEngine {
     ///
     /// `pending` narrows the predictive lookup to readings the romaji tail
     /// can still become (わせ + `d` keeps わせだ…, drops わせり…);
-    /// `predictive_limit` caps those results. `only` restricts search and
-    /// dedup to one dictionary, so shared surfaces stay visible per view.
+    /// `reach` says how many of those may join and how far past the typing
+    /// they may run. `only` restricts search and dedup to one dictionary,
+    /// so shared surfaces stay visible per view.
     pub(super) fn search_dictionaries(
         &self,
         reading: &str,
         pending: &str,
         limit: usize,
-        predictive_limit: usize,
-        min_prefix_chars: usize,
+        reach: PredictiveReach,
         only: Option<CandidateSource>,
     ) -> Vec<AnnotatedCandidate> {
         let dicts = [
@@ -491,20 +502,25 @@ impl InputMethodEngine {
         // rides on the candidate so selecting it commits and records under
         // the right key.
         let constraint = self.tail_constraint(pending);
-        if reading.chars().count() >= min_prefix_chars
+        if reading.chars().count() >= reach.min_prefix_chars
             && !matches!(constraint, TailConstraint::Dead)
         {
-            let mut budget = predictive_limit;
+            let mut budget = reach.limit;
             for &(dict, source) in &dicts {
                 if budget == 0 {
                     break;
                 }
                 let Some(dict) = dict else { continue };
                 let matches = match &constraint {
-                    TailConstraint::Unconstrained => dict.predictive_search(reading, budget),
-                    TailConstraint::Narrow(expansions) => {
-                        dict.predictive_search_expanded(reading, expansions, budget)
+                    TailConstraint::Unconstrained => {
+                        dict.predictive_search(reading, budget, reach.extra_chars)
                     }
+                    TailConstraint::Narrow(expansions) => dict.predictive_search_expanded(
+                        reading,
+                        expansions,
+                        budget,
+                        reach.extra_chars,
+                    ),
                     TailConstraint::Dead => unreachable!("checked above"),
                 };
                 for m in matches {
@@ -612,8 +628,11 @@ impl InputMethodEngine {
                 base,
                 pending,
                 usize::MAX,
-                predictive_limit(prediction),
-                MIN_PREDICTIVE_PREFIX_CHARS,
+                PredictiveReach {
+                    limit: predictive_limit(prediction),
+                    extra_chars: self.config.predict_extra_chars,
+                    min_prefix_chars: MIN_PREDICTIVE_PREFIX_CHARS,
+                },
                 None,
             )
             .into_iter()
@@ -719,7 +738,10 @@ impl InputMethodEngine {
             return vec![];
         }
         let (max, extensions) = match scope {
-            LearningScope::Suggest => (MAX_LEARNING_CANDIDATES, cache.predict(reading)),
+            LearningScope::Suggest => (
+                MAX_LEARNING_CANDIDATES,
+                cache.predict(reading, self.config.predict_extra_chars),
+            ),
             LearningScope::History => (usize::MAX, cache.prefix_lookup(reading)),
             LearningScope::Exact => (usize::MAX, Vec::new()),
         };
@@ -779,8 +801,11 @@ impl InputMethodEngine {
             reading,
             &pending,
             CandidateList::DEFAULT_PAGE_SIZE,
-            MAX_PREDICTIVE_SUGGESTIONS,
-            MIN_PREDICTIVE_PREFIX_CHARS,
+            PredictiveReach {
+                limit: MAX_PREDICTIVE_SUGGESTIONS,
+                extra_chars: self.config.predict_extra_chars,
+                min_prefix_chars: MIN_PREDICTIVE_PREFIX_CHARS,
+            },
             None,
         )
         .into_iter()

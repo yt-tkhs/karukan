@@ -82,7 +82,6 @@ impl InputMethodEngine {
             LearningConfig {
                 max_entries: settings.learning.max_entries,
                 max_surface_chars: settings.learning.max_surface_chars,
-                max_predictive_chars: settings.learning.max_predictive_chars,
             },
         );
 

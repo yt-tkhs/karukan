@@ -71,6 +71,11 @@ pub(in crate::core) struct SurroundingContext {
 pub struct EngineConfig {
     /// Number of conversion candidates for explicit conversion (Space key)
     pub num_candidates: usize,
+    /// How many chars past the typed reading a predictive (prefix-extending)
+    /// candidate may run, in the dictionaries and the learning cache alike:
+    /// 「ほん」 offers 本日 and 本当に, not 「本日の日報です」 until the
+    /// typing is within reach of its end.
+    pub predict_extra_chars: usize,
     /// Maximum context length to display
     pub display_context_chars: usize,
     /// Maximum context length for API calls (to avoid overflow)
@@ -120,6 +125,7 @@ impl EngineConfig {
     pub fn from_settings(settings: &crate::config::Settings) -> Self {
         Self {
             num_candidates: settings.conversion.num_candidates,
+            predict_extra_chars: settings.conversion.predict_extra_chars,
             display_context_chars: 10,
             context_chars: if settings.conversion.use_context {
                 settings.conversion.context_chars
@@ -149,6 +155,7 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             num_candidates: 3, // Space conversion: beam search with 3 candidates
+            predict_extra_chars: 4,
             display_context_chars: 10,
             context_chars: 10,
             chunk_chars: 30,

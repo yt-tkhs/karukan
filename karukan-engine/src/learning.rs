@@ -34,15 +34,6 @@ pub struct LearningConfig {
     /// accepts. Keeps whole-sentence live-conversion commits — one-off text
     /// that never matches again — out of the cache.
     pub max_surface_chars: usize,
-    /// Longest reading (Unicode chars) that [`LearningCache::predict`]
-    /// extends a typed prefix to on the strength of a single commit. A
-    /// longer reading is a sentence rather than a word: committed once it
-    /// is one-off text, and predicting it would head every later
-    /// conversion of its first kana with the whole sentence. It becomes a
-    /// prediction once committed [`HABITUAL_FREQUENCY`] times — the
-    /// greeting typed every morning. Exact matches ignore this cap: the
-    /// user typed that reading in full.
-    pub max_predictive_chars: usize,
 }
 
 impl LearningConfig {
@@ -50,10 +41,6 @@ impl LearningConfig {
     pub const DEFAULT_MAX_ENTRIES: usize = 10_000;
     /// Default for [`max_surface_chars`](Self::max_surface_chars).
     pub const DEFAULT_MAX_SURFACE_CHARS: usize = 50;
-    /// Default for [`max_predictive_chars`](Self::max_predictive_chars):
-    /// a word (きょうと is 4) predicts at once, anything longer waits to
-    /// be repeated.
-    pub const DEFAULT_MAX_PREDICTIVE_CHARS: usize = 4;
 }
 
 impl Default for LearningConfig {
@@ -61,17 +48,9 @@ impl Default for LearningConfig {
         Self {
             max_entries: Self::DEFAULT_MAX_ENTRIES,
             max_surface_chars: Self::DEFAULT_MAX_SURFACE_CHARS,
-            max_predictive_chars: Self::DEFAULT_MAX_PREDICTIVE_CHARS,
         }
     }
 }
-
-/// Commits after which a reading over
-/// [`max_predictive_chars`](LearningConfig::max_predictive_chars) counts as
-/// habitual rather than one-off and is predicted like a word. Mozc draws
-/// the same line: a full-sentence history entry with `suggestion_freq <= 1`
-/// is not suggested.
-pub const HABITUAL_FREQUENCY: u32 = 2;
 
 /// In-memory cache of user learning data.
 ///
@@ -82,7 +61,6 @@ pub struct LearningCache {
     entries: HashMap<String, Vec<LearningEntry>>,
     max_entries: usize,
     max_surface_chars: usize,
-    max_predictive_chars: usize,
     dirty: bool,
 }
 
@@ -93,7 +71,6 @@ impl LearningCache {
             entries: HashMap::new(),
             max_entries: config.max_entries,
             max_surface_chars: config.max_surface_chars,
-            max_predictive_chars: config.max_predictive_chars,
             dirty: false,
         }
     }
@@ -166,17 +143,18 @@ impl LearningCache {
     }
 
     /// The predictions for a typed `prefix`: the readings extending it
-    /// (the exact reading is [`lookup`](Self::lookup)'s), minus the long
-    /// one-offs — a reading over `max_predictive_chars` is predicted only
-    /// once committed [`HABITUAL_FREQUENCY`] times (see
-    /// [`LearningConfig::max_predictive_chars`]). A history browser that
-    /// wants everything uses [`prefix_lookup`](Self::prefix_lookup).
-    pub fn predict(&self, prefix: &str) -> Vec<(String, String, f64)> {
-        self.scored(|reading, entry| {
+    /// (the exact reading is [`lookup`](Self::lookup)'s) by at most
+    /// `max_extra` chars. A longer reading is held back — a sentence
+    /// committed every morning must not head every later typing of its
+    /// first kana — and comes up once the typing is within `max_extra`
+    /// chars of its end. A history browser that wants everything uses
+    /// [`prefix_lookup`](Self::prefix_lookup).
+    pub fn predict(&self, prefix: &str, max_extra: usize) -> Vec<(String, String, f64)> {
+        let typed = prefix.chars().count();
+        self.scored(|reading, _| {
             reading != prefix
                 && reading.starts_with(prefix)
-                && (reading.chars().count() <= self.max_predictive_chars
-                    || entry.frequency >= HABITUAL_FREQUENCY)
+                && reading.chars().count() - typed <= max_extra
         })
     }
 
@@ -594,7 +572,6 @@ mod tests {
         let mut cache = LearningCache::new(LearningConfig {
             max_entries: 100,
             max_surface_chars: 5,
-            ..LearningConfig::default()
         });
 
         cache.record("あ", &"漢".repeat(6));
@@ -611,7 +588,6 @@ mod tests {
         let mut cache = LearningCache::new(LearningConfig {
             max_entries: 100,
             max_surface_chars: 5,
-            ..LearningConfig::default()
         });
 
         // Only the surface is capped; a long reading with a short surface
@@ -645,7 +621,7 @@ mod tests {
 
         // The exact reading is `lookup`'s; `predict` is the extensions.
         let readings: Vec<String> = cache
-            .predict("きょう")
+            .predict("きょう", 4)
             .into_iter()
             .map(|(reading, _, _)| reading)
             .collect();
@@ -654,27 +630,26 @@ mod tests {
     }
 
     #[test]
-    fn test_predict_holds_back_a_long_one_off_until_habitual() {
-        let mut cache = LearningCache::new(LearningConfig {
-            max_predictive_chars: 5,
-            ..LearningConfig::default()
-        });
+    fn test_predict_holds_back_readings_far_past_the_typing() {
+        let mut cache = cache_with(100);
         cache.record("きょうと", "京都");
-        // Nine kana: a sentence, committed once.
-        cache.record("きょうはかいぎです", "今日は会議です");
+        // Nine kana: a sentence committed every morning.
+        for _ in 0..3 {
+            cache.record("きょうはかいぎです", "今日は会議です");
+        }
 
-        let predicted = |cache: &LearningCache| -> Vec<String> {
+        let predicted = |prefix: &str| -> Vec<String> {
             cache
-                .predict("きょ")
+                .predict(prefix, 4)
                 .into_iter()
                 .map(|(_, surface, _)| surface)
                 .collect()
         };
-        assert_eq!(predicted(&cache), vec!["京都".to_string()]);
-
-        // Committed again it is habitual, and predicts like a word.
-        cache.record("きょうはかいぎです", "今日は会議です");
-        assert!(predicted(&cache).contains(&"今日は会議です".to_string()));
+        // Two kana typed: the word (2 more) comes up, the sentence (7 more)
+        // does not, however often it was committed.
+        assert_eq!(predicted("きょ"), vec!["京都".to_string()]);
+        // Within four kana of its end, the sentence comes up.
+        assert_eq!(predicted("きょうはか"), vec!["今日は会議です".to_string()]);
 
         // The full history had it all along.
         assert_eq!(cache.prefix_lookup("きょ").len(), 2);
@@ -682,15 +657,13 @@ mod tests {
 
     #[test]
     fn test_predict_cap_is_inclusive_and_exact_lookup_ignores_it() {
-        let mut cache = LearningCache::new(LearningConfig {
-            max_predictive_chars: 4,
-            ..LearningConfig::default()
-        });
+        let mut cache = cache_with(100);
         cache.record("きょうと", "京都");
         cache.record("きょうとし", "京都市");
 
+        // 「き」 + 3 reaches きょうと, not きょうとし (4 past).
         let readings: Vec<String> = cache
-            .predict("き")
+            .predict("き", 3)
             .into_iter()
             .map(|(reading, _, _)| reading)
             .collect();

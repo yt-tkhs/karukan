@@ -218,7 +218,6 @@ fn init_learning_cache_applies_configured_surface_cap() {
         LearningConfig {
             max_entries: 10_000,
             max_surface_chars: 5,
-            ..LearningConfig::default()
         },
     );
     let cache = engine.learning.as_mut().expect("learning enabled");
@@ -528,8 +527,17 @@ fn sentence_committed_once_is_not_predicted_from_its_first_kana() {
 }
 
 #[test]
-fn sentence_committed_twice_is_predicted() {
+fn a_long_entry_is_predicted_once_the_typing_is_within_reach() {
+    // However often it was committed, the sentence stays out of the list
+    // until at most `predict_extra_chars` (4) kana remain to type.
     let mut engine = engine_with_learned(SENTENCE_READING, SENTENCE);
+    for _ in 0..3 {
+        engine
+            .learning
+            .as_mut()
+            .unwrap()
+            .record(SENTENCE_READING, SENTENCE);
+    }
     let suggested = shown_candidates(&type_romaji(&mut engine, "kyou"));
     assert!(
         !suggested.contains(&SENTENCE.to_string()),
@@ -538,16 +546,11 @@ fn sentence_committed_twice_is_predicted() {
     engine.process_key(&press_key(Keysym::ESCAPE));
     assert!(matches!(engine.state(), InputState::Empty));
 
-    // The second commit makes it habitual — the greeting typed every day.
-    engine
-        .learning
-        .as_mut()
-        .unwrap()
-        .record(SENTENCE_READING, SENTENCE);
-    let suggested = shown_candidates(&type_romaji(&mut engine, "kyou"));
+    // 「きょうはかいぎがあるのではやめにか」: four kana short of the end.
+    let suggested = shown_candidates(&type_romaji(&mut engine, "kyouhakaigigaarunodehayamenika"));
     assert!(
         suggested.contains(&SENTENCE.to_string()),
-        "a sentence committed twice is predicted, got {suggested:?}",
+        "within reach of its end the sentence completes, got {suggested:?}"
     );
 }
 

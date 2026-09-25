@@ -4,8 +4,8 @@
 //! the mixed list, which dedups shared texts into the highest-priority
 //! source and would hide them from every lower one.
 
-use super::conversion::Prediction;
 use super::conversion::width_annotation;
+use super::conversion::{Prediction, PredictiveReach};
 use super::*;
 
 /// The source views Ctrl+T and Ctrl+R rotate through, grouped by what the
@@ -164,8 +164,11 @@ impl InputMethodEngine {
                     &base,
                     &pending,
                     usize::MAX,
-                    if closed { 0 } else { usize::MAX },
-                    1,
+                    PredictiveReach {
+                        limit: if closed { 0 } else { usize::MAX },
+                        extra_chars: usize::MAX,
+                        min_prefix_chars: 1,
+                    },
                     None,
                 )
                 .into_iter()

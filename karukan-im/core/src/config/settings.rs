@@ -151,6 +151,11 @@ pub struct ConversionSettings {
     pub strategy: StrategyMode,
     /// Number of candidates to show on Space conversion
     pub num_candidates: usize,
+    /// How many characters past the typed reading a predictive
+    /// (prefix-extending) candidate may run, for dictionaries and the
+    /// learning cache alike; a longer word or learned sentence comes up
+    /// once the typing is within reach of its end
+    pub predict_extra_chars: usize,
     /// Use surrounding text (text left of cursor) as context for conversion
     pub use_context: bool,
     /// Maximum number of surrounding text characters passed to the conversion API
@@ -209,10 +214,6 @@ pub struct LearningSettings {
     /// cache; longer conversion results (e.g. whole live-converted
     /// sentences) are not learned
     pub max_surface_chars: usize,
-    /// Longest reading (in characters) a learned entry may have and still
-    /// be predicted from a typed prefix after a single commit; a longer one
-    /// is predicted only once committed twice. Exact matches are unaffected
-    pub max_predictive_chars: usize,
 }
 
 impl Default for Settings {
@@ -383,7 +384,7 @@ mod tests {
         assert!(settings.learning.enabled);
         assert_eq!(settings.learning.max_entries, 10000);
         assert_eq!(settings.learning.max_surface_chars, 50);
-        assert_eq!(settings.learning.max_predictive_chars, 4);
+        assert_eq!(settings.conversion.predict_extra_chars, 4);
     }
 
     #[test]
@@ -481,7 +482,6 @@ max_surface_chars = 10
         assert_eq!(settings.learning.max_surface_chars, 10);
         assert!(settings.learning.enabled);
         assert_eq!(settings.learning.max_entries, 10000);
-        assert_eq!(settings.learning.max_predictive_chars, 4);
     }
 
     #[test]

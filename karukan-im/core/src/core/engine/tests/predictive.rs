@@ -104,8 +104,9 @@ fn dead_romaji_tail_suppresses_prediction() {
     assert!(!texts.contains(&"早稲田".to_string()));
 }
 
-/// The conversion list gets the full ranked predictive set (paged); the
-/// composing suggestion list stays capped at 3.
+/// The conversion list gets the full ranked predictive set (paged) within
+/// `predict_extra_chars` of the typing; the composing suggestion list stays
+/// capped at 3.
 #[test]
 fn conversion_list_gets_all_predictive_candidates() {
     let mut engine = InputMethodEngine::new();
@@ -124,13 +125,15 @@ fn conversion_list_gets_all_predictive_candidates() {
         .into_iter()
         .map(|c| c.text)
         .collect();
-    for surface in ["早稲田", "早稲田市", "早稲田大学", "早稲田前", "早稲田駅"]
-    {
+    for surface in ["早稲田", "早稲田市", "早稲田前", "早稲田駅"] {
         assert!(
             conversion.contains(&surface.to_string()),
             "missing {surface}"
         );
     }
+    // わせだだいがく runs five kana past 「わせ」: held back until the typing
+    // is within reach of its end.
+    assert!(!conversion.contains(&"早稲田大学".to_string()));
 
     let suggestions = engine.lookup_dict_candidates("わせ");
     assert!(suggestions.len() <= 3);
@@ -169,4 +172,27 @@ fn conversion_with_pending_keeps_narrowed_candidates() {
         .find(|c| c.text == "早稲田")
         .unwrap();
     assert_eq!(waseda.reading.as_deref(), Some("わせだ"));
+}
+
+#[test]
+fn predictive_dictionary_matches_stop_predict_extra_chars_past_the_typing() {
+    // 「ほん」 must not offer a nine-kana entry; it comes up once the typing
+    // is within four kana of its end.
+    let mut engine = InputMethodEngine::new();
+    engine.dicts.system = Some(dict_from_json(
+        r#"[
+            {"reading":"ほんじつ","candidates":[{"surface":"本日","score":1000.0}]},
+            {"reading":"ほんじつのにっぽうです","candidates":[{"surface":"本日の日報です","score":100.0}]}
+        ]"#,
+    ));
+
+    let texts = |engine: &InputMethodEngine, reading: &str| -> Vec<String> {
+        engine
+            .lookup_dict_candidates(reading)
+            .into_iter()
+            .map(|c| c.text)
+            .collect()
+    };
+    assert_eq!(texts(&engine, "ほん"), vec!["本日".to_string()]);
+    assert!(texts(&engine, "ほんじつのにっ").contains(&"本日の日報です".to_string()));
 }
