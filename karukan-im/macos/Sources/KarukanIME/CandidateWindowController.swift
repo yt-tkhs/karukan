@@ -213,30 +213,66 @@ class CandidateWindowController {
         // size is the panel size.
         stackView.layoutSubtreeIfNeeded()
         let contentSize = stackView.fittingSize
-        let panelWidth = max(contentSize.width, Self.minPanelWidth)
-        let panelHeight = contentSize.height
+        let panelSize = NSSize(
+            width: max(contentSize.width, Self.minPanelWidth), height: contentSize.height)
 
         guard cursorRect != .zero else {
-            panel.setFrame(
-                NSRect(x: 100, y: 100, width: panelWidth, height: panelHeight), display: true)
+            panel.setFrame(NSRect(origin: NSPoint(x: 100, y: 100), size: panelSize), display: true)
             panel.orderFront(nil)
             return
         }
 
-        // Flip above the cursor when the panel would fall off the bottom of
-        // the screen — the screen the composition is on, not `NSScreen.main`:
-        // with two displays the main one can be the other, whose bottom edge
-        // would flip the panel for no reason.
-        let belowY = cursorRect.minY - Self.cursorGap - panelHeight
+        // The screen the composition is on, not `NSScreen.main`: with two
+        // displays the main one can be the other, whose edges would flip
+        // and clamp the panel for no reason.
         let screen =
             NSScreen.screens.first { $0.frame.contains(cursorRect.origin) } ?? NSScreen.main
-        let showAbove = screen.map { belowY < $0.visibleFrame.minY } ?? false
-        let originY = showAbove ? cursorRect.maxY + Self.cursorGap : belowY
-
-        panel.setFrame(
-            NSRect(x: cursorRect.minX, y: originY, width: panelWidth, height: panelHeight),
-            display: true)
+        let frame = PanelPlacement.frame(
+            for: panelSize, near: cursorRect, within: screen?.visibleFrame, gap: Self.cursorGap)
+        panel.setFrame(frame, display: true)
         panel.orderFront(nil)
+    }
+}
+
+/// Where the candidate panel goes relative to the composition's line rect:
+/// under it when that fits on the screen, else above it, and never past a
+/// screen edge — a composition near the right edge or the bottom used to
+/// push the panel off screen. Pure, so it is unit-tested without a window.
+enum PanelPlacement {
+    /// The panel frame for `size` hanging `gap` points under `cursor`, kept
+    /// inside `visible` (the screen's visible frame; `nil` skips the
+    /// clamping when no screen is known).
+    static func frame(for size: NSSize, near cursor: NSRect, within visible: NSRect?, gap: CGFloat)
+        -> NSRect
+    {
+        let below = cursor.minY - gap - size.height
+        guard let visible else {
+            return NSRect(x: cursor.minX, y: below, width: size.width, height: size.height)
+        }
+        // Wider than the screen: show its left edge, which carries the
+        // numbers and the candidates.
+        let width = min(size.width, visible.width)
+        let height = size.height
+
+        // Under the line when it fits, above it when that fits, otherwise
+        // wherever it fits at all — top rows first when even that is too
+        // tall.
+        let above = cursor.maxY + gap
+        let y: CGFloat
+        if below >= visible.minY {
+            y = below
+        } else if above + height <= visible.maxY {
+            y = above
+        } else if height <= visible.height {
+            y = visible.minY
+        } else {
+            y = visible.maxY - height
+        }
+
+        // Start at the composition's left edge, pulled back from the right
+        // edge as far as needed.
+        let x = max(visible.minX, min(cursor.minX, visible.maxX - width))
+        return NSRect(x: x, y: y, width: width, height: height)
     }
 }
 

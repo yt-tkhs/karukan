@@ -178,7 +178,7 @@ Swift/InputMethodKit frontend. All IME state lives in karukan-imserver (spawned 
 - `EngineProcess.swift` — child process lifecycle: crash restart with exponential backoff, EOF-based clean shutdown (lets the server save its learning cache)
 - `EngineClient.swift` — JSON-RPC transport (sync for process_key, async for fire-and-forget)
 - `EngineProtocol.swift` — Swift mirror of `karukan-im/core/src/server/protocol.rs` (keep in sync; protocol_version guards breaking changes)
-- `CandidateWindowController.swift` — custom NSPanel candidate window (engine pre-paginates) on Liquid Glass (`NSGlassEffectView` on macOS 26+, `NSVisualEffectView` popover material below): number column, accent-colored rounded selection, right-aligned annotations, aux footer under a hairline. The page indicator is the aux line's `(1/3)`, so the panel renders none of its own
+- `CandidateWindowController.swift` — custom NSPanel candidate window (engine pre-paginates) on Liquid Glass (`NSGlassEffectView` on macOS 26+, `NSVisualEffectView` popover material below): number column, accent-colored rounded selection, right-aligned annotations, aux footer under a hairline. `PanelPlacement.frame` (pure, unit-tested) hangs it under the composition line on the screen the composition is on, flips it above when the bottom is too close, and clamps it inside the screen's visible frame. The page indicator is the aux line's `(1/3)`, so the panel renders none of its own
 
 ## macOS Input Mode Design
 
