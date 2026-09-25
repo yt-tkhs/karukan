@@ -623,18 +623,27 @@ impl InputMethodEngine {
 
         // 2. User dictionary candidates (system dictionary follows the model
         //    in step 4, so the two are split here).
-        let (user_dict, system_dict): (Vec<_>, Vec<_>) = self
-            .search_dictionaries(
-                base,
-                pending,
+        let reach = PredictiveReach {
+            limit: predictive_limit(prediction),
+            extra_chars: self.config.predict_extra_chars,
+            min_prefix_chars: MIN_PREDICTIVE_PREFIX_CHARS,
+        };
+        let mut dict_hits = Vec::new();
+        if !pending.is_empty() {
+            // The settled reading's own matches come first: Space converts
+            // 「ほ」 + `n` as 「ほん」, so 本 belongs here, while the live
+            // lookup below still sees the tail and skips exact matches.
+            // Its predictions are the tail-narrowed ones found below.
+            dict_hits.extend(self.search_dictionaries(
+                reading,
+                "",
                 usize::MAX,
-                PredictiveReach {
-                    limit: predictive_limit(prediction),
-                    extra_chars: self.config.predict_extra_chars,
-                    min_prefix_chars: MIN_PREDICTIVE_PREFIX_CHARS,
-                },
+                PredictiveReach { limit: 0, ..reach },
                 None,
-            )
+            ));
+        }
+        dict_hits.extend(self.search_dictionaries(base, pending, usize::MAX, reach, None));
+        let (user_dict, system_dict): (Vec<_>, Vec<_>) = dict_hits
             .into_iter()
             .partition(|ac| ac.source == CandidateSource::UserDictionary);
         for ac in user_dict {

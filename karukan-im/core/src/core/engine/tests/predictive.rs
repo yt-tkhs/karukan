@@ -196,3 +196,27 @@ fn predictive_dictionary_matches_stop_predict_extra_chars_past_the_typing() {
     assert_eq!(texts(&engine, "ほん"), vec!["本日".to_string()]);
     assert!(texts(&engine, "ほんじつのにっ").contains(&"本日の日報です".to_string()));
 }
+
+#[test]
+fn space_finds_exact_matches_of_the_settled_reading_behind_a_romaji_tail() {
+    // 「hon」 + Space converts 「ほん」 (the stranded n settles as ん), so the
+    // dictionary's 本 belongs in the list although the buffer still holds
+    // 「ほ」 + `n`, whose live lookup skips exact matches.
+    let mut engine = InputMethodEngine::new();
+    engine.dicts.system = Some(dict_from_json(
+        r#"[{"reading":"ほん","candidates":[{"surface":"本","score":17.0}]}]"#,
+    ));
+    for ch in "hon".chars() {
+        engine.process_key(&press(ch));
+    }
+    assert_eq!(engine.input_buf.pending(), "n");
+    engine.process_key(&press_key(Keysym::SPACE));
+    let texts: Vec<String> = engine
+        .candidates()
+        .expect("conversion")
+        .candidates()
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
+    assert!(texts.contains(&"本".to_string()), "got {texts:?}");
+}
